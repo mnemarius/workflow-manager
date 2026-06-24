@@ -55,6 +55,22 @@ If a task spans categories (e.g. "build the dashboard's workflow detail page"), 
 
 ---
 
+## Agent skills
+
+### Issue tracker
+
+Issues live in [github.com/mnemarius/workflow-manager](https://github.com/mnemarius/workflow-manager) (GitHub Issues, via `gh` CLI). See [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+Default canonical vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See [docs/agents/triage-labels.md](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context. No `CONTEXT.md` — domain knowledge is split across [docs/BUSINESS.md](docs/BUSINESS.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/STYLING.md](docs/STYLING.md) (route via the table above). ADRs go in `docs/adr/`. See [docs/agents/domain.md](docs/agents/domain.md).
+
+---
+
 ## When in doubt
 
 - If a question is about *what* to build → `docs/BUSINESS.md`.
