@@ -1,3 +1,4 @@
+
 # Architecture
 
 Tech stack, system topology, data model, key design decisions, and cross-cutting concerns. **Consult this file whenever a task touches code structure, data flow, persistence, protocols, scaling, observability, security, or deployment.**
@@ -89,7 +90,19 @@ Six tables. Get these right and the rest follows.
 | `events`               | Append-only log of every state transition. Audit trail, debug log, replay source.                    |
 | `outbox`               | Pending side effects (task enqueue, external notifications). Drained transactionally.                |
 
-**Statuses:** `PENDING`, `READY`, `RUNNING`, `SUCCEEDED`, `FAILED`, `RETRY_SCHEDULED`, `CANCELLED`.
+**Task statuses:**
+
+| Status            | Meaning                                                                                              |
+|-------------------|------------------------------------------------------------------------------------------------------|
+| `PENDING`         | Waiting on DAG dependencies. Has at least one upstream task not yet in a terminal state.             |
+| `READY`           | All dependencies satisfied. Eligible to be leased by a worker on the next poll.                      |
+| `RUNNING`         | Currently leased by a worker. A `task_leases` row exists with a `lease_expires_at` in the future.    |
+| `SUCCEEDED`       | Worker reported success. Terminal. Triggers downstream `PENDING → READY` promotion.                  |
+| `FAILED`          | Worker reported failure and retry budget is exhausted, or task was pushed to DLQ. Terminal.          |
+| `RETRY_SCHEDULED` | Worker failed; retry scheduled. `scheduled_at` set to next attempt; flips to `READY` when due.       |
+| `CANCELLED`       | Externally cancelled (via API or because the parent workflow was cancelled). Terminal.               |
+
+**Promotion is event-driven, not query-driven.** When a task transitions to `SUCCEEDED`, the orchestrator inspects its DAG children in the same transaction; any child whose parents are all now `SUCCEEDED` is flipped `PENDING → READY`. No periodic "scan for promotable tasks" job exists. The `outbox` carries any side effects of the promotion.
 
 ---
 
@@ -101,7 +114,7 @@ Six tables. Get these right and the rest follows.
 
 ### B. Workflow definition language
 
-**Declarative JSON/YAML DAGs**, submitted as data. Simple, language-agnostic, no code-loading or deterministic replay. Code-as-workflow (Temporal style) is *explicitly out of scope* for v1.
+**Declarative JSON DAGs**, submitted as data over REST. Validated against a JSON Schema at the API boundary, stored as JSONB in `workflow_definitions.dag`. One wire format, one parser, one set of errors. YAML is *not* accepted at the API — clients that want to author in YAML can convert client-side. Code-as-workflow (Temporal style) is *explicitly out of scope* for v1: no code-loading, no deterministic replay.
 
 ### C. Retry policy
 

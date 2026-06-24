@@ -6,7 +6,11 @@ The product vision, scope boundaries, milestone targets, and demo intent. **Cons
 
 ## What this project IS
 
-A **coordinator service** for durable workflows. It accepts workflow definitions, schedules their steps, hands work to worker processes, tracks state in a database, retries failures, and exposes a dashboard to observe and control runs.
+**Postgres-only, single-JAR durable workflows — sized for one person to deploy and run.**
+
+A coordinator service that accepts workflow definitions (JSON DAGs over REST), schedules their steps, hands work to worker processes over gRPC, tracks state in Postgres, retries failures, and exposes a dashboard to observe and control runs. The engine is one Spring Boot JAR; the substrate is one Postgres database. No Kafka, no Redis, no Zookeeper, no K8s assumed. M7 (multi-engine leader election) scales the engine horizontally *without* leaving that substrate.
+
+"Fits on a single small VM" is a quality bar, not just a nice-to-have. Every feature is judged against it.
 
 ## What this project IS NOT
 
@@ -39,7 +43,7 @@ Each milestone is independently shippable and demoable. Do not skip ahead.
 | 0  | Project skeleton, CI, Docker Compose, Flyway migrations         | "I have a clean foundation."                                 | 1 week      |
 | 1  | Single-task submit + execute (engine + 1 worker, no retries)    | A submitted task runs end-to-end.                            | 1–2 weeks   |
 | 2  | Retries, timeouts, leases, DLQ                                  | Kill a worker mid-task → another picks it up.                | 1–2 weeks   |
-| 3  | DAG support (multi-step workflows with dependencies)            | Photo-pipeline demo runs.                                    | 2 weeks     |
+| 3  | DAG support (multi-step workflows with dependencies)            | Reference demo runs (TBD — picked when M3 starts).           | 2 weeks     |
 | 4  | Durable timers + scheduled workflows (cron)                     | "Drip email" demo runs across days.                          | 1 week      |
 | 5  | Dashboard v1: list workflows, drill into DAG, see logs          | Showable to other engineers.                                 | 2 weeks     |
 | 6  | Live updates via SSE; cancel / retry / replay buttons           | The dashboard feels alive.                                   | 1 week      |
@@ -54,13 +58,27 @@ Each milestone is independently shippable and demoable. Do not skip ahead.
 
 ## Demo customer story
 
-The reference demo for M3 is a **photo-processing pipeline**: it is visual, easy to explain, and exercises every primitive (multi-step DAG, retries, timers, observable progress). New features should be validated by showing how they improve or extend this demo.
+**Deferred until M3.** The M3 reference demo will be picked when M3 actually starts — by then we'll know more about what feels right for the audience and what's cheap to wire up. Until then, M0–M2 use toy tasks (`sleep(1s); echo "did thing"`).
+
+Whatever demo is picked must:
+
+- Be visually clear in the dashboard (a DAG worth looking at — not a single linear chain).
+- Exercise every primitive present at M3: multi-step DAG, retries, observable progress.
+- Be implementable with Java-native libraries (no Python escape hatch — workers are Java only).
+- Have at least one step that *can* legitimately fail and benefit from retries (so the chaos-test story isn't contrived).
+
+Once chosen, new features should be validated by showing how they improve or extend the chosen demo.
 
 ## Audience and intent
 
-This is built both as a **portfolio piece** and a **real product**. That has two consequences:
+This is built primarily as a **portfolio piece**, aimed at distributed-systems and backend-infrastructure engineers (the kind of people who will read your leader election design, idempotency contract, and DLQ semantics, and probe them in interviews).
+
+"Real product" is a **quality bar**, not a go-to-market goal: the system must actually work end-to-end, be deployable, and survive crashes — not be a toy. But there is no marketing, no pricing, no positioning against Temporal / Inngest / Hatchet. Adoption by other users is a bonus, not a goal.
+
+That has three consequences:
 
 - Stick to mainstream picks where reasonable (Spring Boot, Postgres, React) so the work is legible to recruiters and other engineers.
+- Keep the systems-depth milestones (M7 multi-engine leader election, M8 observability) in scope — they are the most differentiated parts of the project for the target audience.
 - Document major decisions as ADRs in `docs/adr/`. The decisions matter as much as the code.
 
 ## Scope discipline rules

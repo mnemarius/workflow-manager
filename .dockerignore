@@ -1,0 +1,11 @@
+# Build outputs and caches must not enter the build context.
+**/build
+**/.gradle
+**/node_modules
+**/dist
+.git
+.github
+.idea
+*.iml
+.vscode
+**/*.log
