@@ -9,6 +9,8 @@ WORKDIR /workspace
 # Copy build scripts first so the dependency layer caches across source changes.
 COPY gradlew ./
 COPY gradle gradle
+# Be resilient to Windows checkouts (CRLF / missing exec bit) so the wrapper runs.
+RUN sed -i 's/\r$//' gradlew && chmod +x gradlew
 COPY settings.gradle.kts build.gradle.kts ./
 COPY engine/build.gradle.kts engine/build.gradle.kts
 COPY worker-sdk/build.gradle.kts worker-sdk/build.gradle.kts
