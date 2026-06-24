@@ -1,0 +1,12 @@
+[versions]
+java = "21"
+springBoot = "3.4.1"
+springDependencyManagement = "1.1.7"
+logstashEncoder = "8.0"
+
+[libraries]
+logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstashEncoder" }
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "springDependencyManagement" }
