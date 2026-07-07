@@ -1,0 +1,4 @@
+# Tests bind gRPC to an ephemeral port to avoid clashing with a running engine or each other.
+grpc:
+  server:
+    port: 0
