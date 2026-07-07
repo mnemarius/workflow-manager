@@ -32,5 +32,3 @@ flowchart TB
 Startup order: `postgres` must report healthy before `engine` starts (Flyway migrations run on engine boot); `worker` and `dashboard` wait for `engine`.
 
 "Fits on a single small VM" is the quality bar — no Kafka, no Redis, no Kubernetes. One `docker compose up` brings up the whole stack; `docker compose down -v` tears it down cleanly.
-
-*Note: as of the current `docker-compose.yml`, the `worker` service is not yet defined — it lands in M1 alongside the worker↔engine gRPC protocol (see the comment at the top of that file). This diagram shows the M1 target topology described in [ARCHITECTURE.md](../ARCHITECTURE.md).*

@@ -7,9 +7,9 @@ their steps, hands work to worker processes over gRPC, tracks state in PostgreSQ
 failures, and exposes a dashboard to observe and control runs. No Kafka, no Redis, no
 Kubernetes — Postgres is the only substrate.
 
-> Status: **M0 — clean foundation.** Build, migrations, Docker Compose and CI are in place.
-> Submit/execute, retries, DAGs, timers and the live dashboard arrive in later milestones
-> (see [docs/BUSINESS.md](docs/BUSINESS.md)).
+> Status: **M1 — single-task submit + execute.** Submit a one-task workflow over REST; a Java
+> worker fetches it over gRPC, runs it, and the run reaches `SUCCEEDED`. Retries, DAGs, timers
+> and the live dashboard arrive in later milestones (see [docs/BUSINESS.md](docs/BUSINESS.md)).
 
 ## Topology
 
@@ -50,18 +50,29 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ## Quickstart (Docker Compose)
 
-Brings up Postgres + engine + dashboard in one command:
+Brings up Postgres + engine + worker + dashboard in one command:
 
 ```bash
 docker compose up --build
 ```
 
 - Engine API & actuator: <http://localhost:8080> (`/actuator/health`, `/actuator/prometheus`)
+- Engine gRPC (worker protocol): `localhost:9090`
 - Dashboard: <http://localhost:5173>
 - Postgres: `localhost:5432` (`workflow` / `workflow`)
 
-Flyway applies the schema (six tables) on engine startup. Tear down with
-`docker compose down -v`.
+The `worker` service runs the sample echo handler and long-polls the engine over gRPC. Flyway
+applies the schema on engine startup. Tear down with `docker compose down -v`.
+
+Submit a single-task workflow and watch it succeed:
+
+```bash
+curl -s localhost:8080/workflows -H 'content-type: application/json' -d '{
+  "name": "demo", "version": 1,
+  "dag": { "tasks": [ { "key": "step1", "type": "echo", "input": { "msg": "hi" } } ] }
+}'
+# -> {"instanceId":"..."}; then GET /workflows/{instanceId} until "status":"SUCCEEDED"
+```
 
 ## Build & test
 
@@ -91,4 +102,6 @@ npm run build
 - [BUSINESS](docs/BUSINESS.md) — scope, milestones, demo intent.
 - [ARCHITECTURE](docs/ARCHITECTURE.md) — tech stack, data model, key decisions.
 - [STYLING](docs/STYLING.md) — code and UI conventions.
+- [Diagrams](docs/diagrams/) — logical, process, and physical views.
 - [ADRs](docs/adr/) — architecture decision records.
+- [FUTURE](FUTURE.md) — deferred ideas and out-of-scope parking lot.

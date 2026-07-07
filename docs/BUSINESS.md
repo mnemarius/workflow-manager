@@ -1,6 +1,6 @@
 # Business
 
-The product vision, scope boundaries, milestone targets, and demo intent. **Consult this file whenever a task touches what the system should or shouldn't do, what counts as "done", scope decisions, milestone planning, or the demo story.**
+The product vision, scope boundaries, milestone targets, and demo intent. **Consult this file whenever a task touches what the system should or shouldn't do, what counts as "done", scope decisions, milestone planning, or the demo story.** Keep the milestone/progress status current: update it when a milestone advances — see [AGENTS.md](../AGENTS.md) rule 10.
 
 ---
 
@@ -37,6 +37,8 @@ That is the bar. If a change does not move the project toward this bar (or one o
 ## Milestones
 
 Each milestone is independently shippable and demoable. Do not skip ahead.
+
+**Current status: M1 complete.** M0 (foundation) and M1 (single-task submit + execute) have shipped; **M2 — retries, timeouts, leases, DLQ** is next.
 
 | #  | Milestone                                                       | Demo proves…                                                 | Est. effort |
 |----|-----------------------------------------------------------------|--------------------------------------------------------------|-------------|
