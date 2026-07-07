@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package workflowmanager.v1;
+
+option java_multiple_files = true;
+option java_package = "com.workflowmanager.protocol.v1";
+option java_outer_classname = "WorkerServiceProto";
+
+// The worker <-> engine contract. See docs/adr/0005-long-poll-grpc-worker-protocol.md.
+// The engine holds FetchTask open (long poll) until work appears or the deadline passes.
+// Delivery is at-least-once (ADR 0004): handlers must be idempotent.
+service WorkerService {
+  rpc FetchTask(FetchTaskRequest) returns (FetchTaskResponse);
+  rpc CompleteTask(CompleteTaskRequest) returns (CompleteTaskResponse);
+}
+
+message FetchTaskRequest {
+  string worker_id = 1;
+  repeated string capabilities = 2; // task types this worker can run
+}
+
+message FetchTaskResponse {
+  oneof result {
+    Task task = 1;
+    NoTask no_task = 2;
+  }
+}
+
+message Task {
+  string task_id = 1;
+  string task_key = 2;
+  string type = 3;
+  string input = 4;            // opaque JSON; the engine never parses payloads
+  int32 attempt = 5;
+  string lease_expires_at = 6; // RFC3339 UTC
+}
+
+message NoTask {}
+
+message CompleteTaskRequest {
+  string task_id = 1;
+  string worker_id = 2;
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message Success {
+  string output = 1; // opaque JSON
+}
+
+message Failure {
+  string error_message = 1;
+}
+
+message CompleteTaskResponse {
+  bool accepted = 1; // false when the lease was lost/reassigned (stale completion)
+}
