@@ -7,6 +7,7 @@ import com.workflowmanager.engine.domain.TaskStatus;
 import com.workflowmanager.engine.domain.WorkflowStatus;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,8 @@ class WorkflowRepositoryIT {
 
     @Test
     void claimAndComplete_singleTask_reachesSucceeded() {
-        Instant now = clock.instant();
+        // Postgres timestamptz is microsecond precision; truncate so round-tripped values compare equal.
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         UUID defId = repo.upsertDefinition("demo", 1, "{\"tasks\":[{\"key\":\"step1\"}]}");
         UUID instanceId = repo.insertInstance(defId, "{\"msg\":\"hi\"}", now);
         repo.insertReadyTask(instanceId, "step1", "echo", "{\"msg\":\"hi\"}", 1, now, now);
