@@ -8,12 +8,18 @@ plugins {
 extra["testcontainers.version"] = "1.21.4"
 
 dependencies {
+    implementation(project(":protocol"))
+
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-jooq")
 
     implementation("org.flywaydb:flyway-core")
     implementation("org.flywaydb:flyway-database-postgresql")
+
+    implementation(libs.grpc.services)
+    implementation(libs.grpc.netty.shaded)
+    implementation(libs.json.schema.validator)
 
     implementation("io.micrometer:micrometer-registry-prometheus")
     implementation(libs.logstash.logback.encoder)
@@ -24,5 +30,6 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.testcontainers:junit-jupiter")
     testImplementation("org.testcontainers:postgresql")
+    testImplementation(project(":worker-sdk")) // end-to-end test drives the real worker SDK
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

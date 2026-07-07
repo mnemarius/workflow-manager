@@ -32,6 +32,7 @@ Before doing meaningful work, **load the relevant doc(s) into context** based on
 | Deployment, docker-compose, Fly.io / Railway                                        | `docs/ARCHITECTURE.md` (Deployment)                  |
 | Security, API keys, payload handling                                                | `docs/ARCHITECTURE.md` (Security)                    |
 | Writing an ADR or other documentation                                               | `docs/STYLING.md` (Documentation style) + `docs/BUSINESS.md` (intent) |
+| System diagrams — components, runtime flow, deployment topology                     | `docs/diagrams/` (logical / process / physical views) |
 
 If a task spans categories (e.g. "build the dashboard's workflow detail page"), read **all** relevant rows. When the three docs disagree, the order of precedence is:
 
@@ -52,6 +53,8 @@ If a task spans categories (e.g. "build the dashboard's workflow detail page"), 
 7. **No premature infrastructure.** No Kafka, Redis, Kubernetes, microservices, or multi-tenancy without a real, observed need.
 8. **Default to no comments.** Write one only when the *why* is non-obvious.
 9. **Document major decisions as ADRs** under `docs/adr/` — one file per decision, short and to the point.
+10. **Keep docs in sync in the same change — without being asked.** When you change code, update the docs it affects *as part of that change*: `docs/ARCHITECTURE.md` (design/data model/protocols), `docs/BUSINESS.md` (scope and the milestone/progress status), `docs/STYLING.md` (conventions), the relevant ADR, and the `docs/diagrams/` views (logical/process/physical) when components, runtime flow, or deployment topology move. Keep edits tight — update what changed, don't restate the code; prevent doc bloat.
+11. **Commit every step.** Make a focused commit after each meaningful, self-contained step (component- or PR-sized), not one big commit at the end. Branch off `main` for a body of work.
 
 ---
 

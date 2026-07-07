@@ -1,0 +1,18 @@
+# Default: let Git normalize text files to LF in the repository.
+* text=auto
+
+# Shell scripts must stay LF even on Windows checkouts — Docker/Linux run them.
+gradlew      text eol=lf
+*.sh         text eol=lf
+
+# Windows scripts must stay CRLF.
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+
+# Binary assets — never apply text/eol conversion.
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.ico        binary
+*.jar        binary

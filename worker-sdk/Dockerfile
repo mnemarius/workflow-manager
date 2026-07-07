@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# Build stage: compile the Spring Boot fat jar with the project's own Gradle wrapper.
-# Build context is the repository root so the wrapper, version catalog and settings
-# (which include the worker-sdk module) are all visible.
+# Build stage: compile the sample worker distribution with the project's Gradle wrapper.
+# Build context is the repository root so the wrapper, version catalog, settings and the
+# shared protocol module are all visible.
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /workspace
 
@@ -15,18 +15,17 @@ COPY settings.gradle.kts build.gradle.kts ./
 COPY protocol/build.gradle.kts protocol/build.gradle.kts
 COPY engine/build.gradle.kts engine/build.gradle.kts
 COPY worker-sdk/build.gradle.kts worker-sdk/build.gradle.kts
-RUN ./gradlew --no-daemon :engine:dependencies > /dev/null 2>&1 || true
+RUN ./gradlew --no-daemon :worker-sdk:dependencies > /dev/null 2>&1 || true
 
-# Copy sources (engine depends on the shared protocol module) and build the boot jar.
+# Copy sources (worker-sdk depends on the shared protocol module) and install the app.
 COPY protocol/src protocol/src
-COPY engine/src engine/src
-RUN ./gradlew --no-daemon :engine:bootJar -x test
+COPY worker-sdk/src worker-sdk/src
+RUN ./gradlew --no-daemon :worker-sdk:installDist -x test
 
-# Run stage: minimal JRE, non-root, just the jar.
+# Run stage: minimal JRE, non-root, the generated start script + libs.
 FROM eclipse-temurin:21-jre-alpine AS run
 WORKDIR /app
 RUN addgroup -S app && adduser -S -G app app
-COPY --from=build /workspace/engine/build/libs/*.jar app.jar
+COPY --from=build /workspace/worker-sdk/build/install/worker-sdk /app
 USER app
-EXPOSE 8080 9090
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+ENTRYPOINT ["/app/bin/worker-sdk"]

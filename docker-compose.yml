@@ -1,5 +1,4 @@
-# Local dev foundation (M0): Postgres + engine + dashboard in one command.
-# The worker container joins in M1, once the worker <-> engine gRPC protocol exists.
+# Local dev stack (M1): Postgres + engine + worker + dashboard in one command.
 services:
   postgres:
     image: postgres:16-alpine
@@ -26,7 +25,8 @@ services:
       SPRING_DATASOURCE_USERNAME: workflow
       SPRING_DATASOURCE_PASSWORD: workflow
     ports:
-      - "8080:8080"
+      - "8080:8080"   # REST + actuator
+      - "9090:9090"   # gRPC (worker protocol)
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,6 +36,16 @@ services:
       timeout: 5s
       retries: 12
       start_period: 40s
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker-sdk/Dockerfile
+    environment:
+      ENGINE_GRPC_TARGET: engine:9090
+    depends_on:
+      engine:
+        condition: service_healthy
 
   dashboard:
     build:

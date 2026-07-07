@@ -1,7 +1,7 @@
 
 # Architecture
 
-Tech stack, system topology, data model, key design decisions, and cross-cutting concerns. **Consult this file whenever a task touches code structure, data flow, persistence, protocols, scaling, observability, security, or deployment.**
+Tech stack, system topology, data model, key design decisions, and cross-cutting concerns. **Consult this file whenever a task touches code structure, data flow, persistence, protocols, scaling, observability, security, or deployment.** Keep it current: when code changes what this file describes, update it (and the [diagrams](diagrams/)) in the same change — see [AGENTS.md](../AGENTS.md) rule 10.
 
 ---
 

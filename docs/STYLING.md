@@ -1,6 +1,6 @@
 # Styling
 
-Code style, project layout, and UI conventions. **Consult this file whenever a task touches how code is written, named, organized, or commented; how logs/metrics/errors are shaped; or how the dashboard looks and feels.**
+Code style, project layout, and UI conventions. **Consult this file whenever a task touches how code is written, named, organized, or commented; how logs/metrics/errors are shaped; or how the dashboard looks and feels.** Keep it current: when a convention changes, update it in the same change — see [AGENTS.md](../AGENTS.md) rule 10.
 
 ---
 

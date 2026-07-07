@@ -3,10 +3,27 @@ java = "21"
 springBoot = "3.4.1"
 springDependencyManagement = "1.1.7"
 logstashEncoder = "8.0"
+protobufPlugin = "0.10.0"
+protobuf = "3.25.5"
+grpc = "1.68.1"
+jooq = "3.19.15"
+jooqPlugin = "9.0"
+annotationsApi = "6.0.53"
+jsonSchemaValidator = "1.5.4"
 
 [libraries]
 logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstashEncoder" }
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
+grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
+grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc" }
+grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc" }
+annotations-api = { module = "org.apache.tomcat:annotations-api", version.ref = "annotationsApi" }
+jooq-meta-extensions = { module = "org.jooq:jooq-meta-extensions", version.ref = "jooq" }
+json-schema-validator = { module = "com.networknt:json-schema-validator", version.ref = "jsonSchemaValidator" }
 
 [plugins]
 spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
 spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "springDependencyManagement" }
+protobuf = { id = "com.google.protobuf", version.ref = "protobufPlugin" }
+jooq-codegen = { id = "nu.studer.jooq", version.ref = "jooqPlugin" }
