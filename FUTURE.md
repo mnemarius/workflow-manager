@@ -16,6 +16,18 @@ scope rules). Nothing here is a commitment.
   call is parked. Have the submit/promotion transaction `NOTIFY` so parked long-polls wake
   immediately instead of polling.
 
+## Contributor onboarding (local development)
+
+- **Clone-and-run local dev setup.** Later, a fresh contributor should be able to clone the repo,
+  stand up **their own local Postgres**, and start developing without any access to a shared or
+  personal database. Flyway migrations already define the schema, so onboarding is really about:
+  a `docker compose up` that provisions an empty local Postgres, a `.env.example` (never a real
+  `.env`) documenting the connection string, and a quickstart in the README.
+- **My own database stays private.** No real connection string, credentials, dump, or host for the
+  maintainer's database ever lands in the repo, docs, or compose files. Contributors run against
+  *their own* throwaway local DB; the maintainer's data is never shared or reachable. Keep secrets
+  in a git-ignored `.env`; commit only `.env.example` with placeholder values.
+
 ## Beyond v1 (see milestones M2+)
 
 - Lease heartbeat / renewal RPC and expired-lease recovery (M2).
@@ -23,3 +35,8 @@ scope rules). Nothing here is a commitment.
 - Multi-step DAG dependencies and richer capability matching (M3).
 - API-key auth on the REST and gRPC surfaces (ARCHITECTURE §Security).
 - Trace-context propagation engine ↔ worker over gRPC metadata (M8).
+- **Grafana dashboards over Prometheus.** The engine already exposes
+  `/actuator/prometheus` ([application.yml](engine/src/main/resources/application.yml)). Add a
+  Grafana service to the compose stack, wire it to scrape Prometheus, and ship starter dashboards
+  (queue depth, task throughput, lease expiries, RPC latencies) so the metrics are actually
+  visualized rather than just scraped.
