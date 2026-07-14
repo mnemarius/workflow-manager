@@ -35,6 +35,12 @@ scope rules). Nothing here is a commitment.
 - Multi-step DAG dependencies and richer capability matching (M3).
 - API-key auth on the REST and gRPC surfaces (ARCHITECTURE §Security).
 - Trace-context propagation engine ↔ worker over gRPC metadata (M8).
+- **Database connection pooling tuning.** Spring Boot already ships HikariCP as the default pool
+  behind the `spring.datasource` config ([application.yml](engine/src/main/resources/application.yml)),
+  so the pool exists but runs on defaults. Look into sizing it deliberately — `maximum-pool-size`,
+  `minimum-idle`, connection/idle timeouts — against the engine's concurrency (long-poll dispatch,
+  gRPC workers) and Postgres' `max_connections`, and expose the Hikari pool metrics via
+  `/actuator/prometheus` so pool saturation is visible on the future Grafana dashboards.
 - **Grafana dashboards over Prometheus.** The engine already exposes
   `/actuator/prometheus` ([application.yml](engine/src/main/resources/application.yml)). Add a
   Grafana service to the compose stack, wire it to scrape Prometheus, and ship starter dashboards
