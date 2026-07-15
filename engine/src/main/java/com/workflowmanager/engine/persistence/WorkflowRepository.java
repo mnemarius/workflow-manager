@@ -29,7 +29,10 @@ public class WorkflowRepository {
             UUID workflowInstanceId,
             TaskStatus status,
             String leaseWorkerId,
-            Instant leaseExpiresAt) {}
+            Instant leaseExpiresAt,
+            int attempts,
+            int maxAttempts,
+            String retryPolicyJson) {}
 
     public record InstanceRow(
             UUID id, WorkflowStatus status, String output, Instant startedAt, Instant finishedAt) {}
@@ -88,9 +91,14 @@ public class WorkflowRepository {
                 .execute();
     }
 
-    /** Claims one due, READY task the worker can run. FOR UPDATE SKIP LOCKED (ADR 0001). */
+    /**
+     * Claims one due task the worker can run: READY, or RETRY_SCHEDULED whose backoff has elapsed
+     * (ADR 0006 — no promotion sweeper). FOR UPDATE SKIP LOCKED (ADR 0001).
+     */
     public Optional<ClaimedTask> claimReadyTask(List<String> capabilities, Instant now) {
-        var condition = TI_STATUS.eq(TaskStatus.READY.name()).and(TI_SCHEDULED_AT.le(now));
+        var condition =
+                TI_STATUS.in(TaskStatus.READY.name(), TaskStatus.RETRY_SCHEDULED.name())
+                        .and(TI_SCHEDULED_AT.le(now));
         if (!capabilities.isEmpty()) {
             condition = condition.and(TI_TYPE.in(capabilities));
         }
@@ -138,7 +146,14 @@ public class WorkflowRepository {
     }
 
     public Optional<RunningTask> loadRunningTask(UUID taskId) {
-        return db.select(TI_WORKFLOW_INSTANCE_ID, TI_STATUS, TL_WORKER_ID, TL_LEASE_EXPIRES_AT)
+        return db.select(
+                        TI_WORKFLOW_INSTANCE_ID,
+                        TI_STATUS,
+                        TL_WORKER_ID,
+                        TL_LEASE_EXPIRES_AT,
+                        TI_ATTEMPTS,
+                        TI_MAX_ATTEMPTS,
+                        TI_RETRY_POLICY)
                 .from(TASK_INSTANCES)
                 .leftJoin(TASK_LEASES)
                 .on(TL_TASK_ID.eq(TI_ID))
@@ -150,7 +165,10 @@ public class WorkflowRepository {
                                         r.get(TI_WORKFLOW_INSTANCE_ID),
                                         TaskStatus.valueOf(r.get(TI_STATUS)),
                                         r.get(TL_WORKER_ID),
-                                        r.get(TL_LEASE_EXPIRES_AT)));
+                                        r.get(TL_LEASE_EXPIRES_AT),
+                                        r.get(TI_ATTEMPTS),
+                                        r.get(TI_MAX_ATTEMPTS),
+                                        dataOrNull(r.get(TI_RETRY_POLICY))));
     }
 
     public void completeTaskSuccess(UUID taskId, String outputJson, Instant now) {
@@ -158,6 +176,16 @@ public class WorkflowRepository {
                 .set(TI_STATUS, TaskStatus.SUCCEEDED.name())
                 .set(TI_OUTPUT, jsonbOrNull(outputJson))
                 .set(TI_FINISHED_AT, now)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_ID.eq(taskId))
+                .execute();
+        releaseLease(taskId);
+    }
+
+    public void scheduleRetry(UUID taskId, Instant nextRunAt, Instant now) {
+        db.update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.RETRY_SCHEDULED.name())
+                .set(TI_SCHEDULED_AT, nextRunAt)
                 .set(TI_UPDATED_AT, now)
                 .where(TI_ID.eq(taskId))
                 .execute();

@@ -112,7 +112,7 @@ Six tables. Get these right and the rest follows.
 | `RUNNING`         | Currently leased by a worker. A `task_leases` row exists with a `lease_expires_at` in the future.    |
 | `SUCCEEDED`       | Worker reported success. Terminal. Triggers downstream `PENDING → READY` promotion.                  |
 | `FAILED`          | Worker reported failure and retry budget is exhausted, or task was pushed to DLQ. Terminal.          |
-| `RETRY_SCHEDULED` | Worker failed; retry scheduled. `scheduled_at` set to next attempt; flips to `READY` when due.       |
+| `RETRY_SCHEDULED` | Worker failed; retry scheduled. Claimable when due: `RETRY_SCHEDULED → RUNNING` on claim (ADR 0006). |
 | `CANCELLED`       | Externally cancelled (via API or because the parent workflow was cancelled). Terminal.               |
 
 **Promotion is event-driven, not query-driven.** When a task transitions to `SUCCEEDED`, the orchestrator inspects its DAG children in the same transaction; any child whose parents are all now `SUCCEEDED` is flipped `PENDING → READY`. No periodic "scan for promotable tasks" job exists. The `outbox` carries any side effects of the promotion.
@@ -146,12 +146,12 @@ A `scheduled_at` column on `task_instances`. The orchestrator's poll is essentia
 
 ```sql
 SELECT * FROM task_instances
-WHERE status = 'READY' AND scheduled_at <= now()
+WHERE status IN ('READY', 'RETRY_SCHEDULED') AND scheduled_at <= now()
 FOR UPDATE SKIP LOCKED
 LIMIT N;
 ```
 
-A "sleep 3 days" step is just a task with `scheduled_at = now() + 3 days` and a no-op handler. Cron / scheduled workflows reuse the same mechanism.
+A "sleep 3 days" step is just a task with `scheduled_at = now() + 3 days` and a no-op handler. Retries reuse the same mechanism: a due `RETRY_SCHEDULED` row is claimed directly, no promotion sweeper (ADR 0006). Cron / scheduled workflows will reuse it too.
 
 ### E. Worker → engine protocol
 

@@ -18,6 +18,18 @@ public class CompletionPolicy {
 
     public record Rejected(String reason) implements Decision {}
 
+    public sealed interface FailureResolution permits Retry, Exhausted {}
+
+    public record Retry(Instant nextRunAt) implements FailureResolution {}
+
+    public record Exhausted() implements FailureResolution {}
+
+    public enum TaskResolution {
+        SUCCEEDED,
+        RETRY_SCHEDULED,
+        DEAD_LETTERED
+    }
+
     public enum InstanceOutcome {
         SUCCEED,
         FAIL,
@@ -46,11 +58,19 @@ public class CompletionPolicy {
         return new Accepted(success);
     }
 
-    /** Given the workflow's remaining open tasks and whether this task failed, decide the run. */
-    public InstanceOutcome progress(long openTasks, boolean taskFailed) {
-        if (taskFailed) {
-            return InstanceOutcome.FAIL; // M1: no retries, fail the run on first task failure
+    public FailureResolution resolveFailure(int attempts, RetryPolicy policy, Instant now) {
+        if (attempts < policy.maxAttempts()) {
+            return new Retry(now.plus(policy.backoffFor(attempts)));
         }
-        return openTasks == 0 ? InstanceOutcome.SUCCEED : InstanceOutcome.CONTINUE;
+        return new Exhausted();
+    }
+
+    /** Given the workflow's remaining open tasks and how this task resolved, decide the run. */
+    public InstanceOutcome progress(long openTasks, TaskResolution resolution) {
+        return switch (resolution) {
+            case DEAD_LETTERED -> InstanceOutcome.FAIL;
+            case RETRY_SCHEDULED -> InstanceOutcome.CONTINUE;
+            case SUCCEEDED -> openTasks == 0 ? InstanceOutcome.SUCCEED : InstanceOutcome.CONTINUE;
+        };
     }
 }

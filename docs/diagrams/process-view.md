@@ -2,7 +2,7 @@
 
 > **Keep in sync:** these diagrams describe the system as built. Whenever you change the architecture, modules, runtime flow, or deployment topology, update the affected view in the same change — do not let them drift.
 
-Runtime behavior for M1 (single-task submit + execute, no retries yet).
+Runtime behavior as of M2 (single-task submit + execute, retries with backoff).
 
 ## Submit → execute happy path
 
@@ -38,6 +38,33 @@ sequenceDiagram
     API-->>Client: 200 OK (status: SUCCEEDED)
 ```
 
+## Failure → retry loop
+
+A failed attempt with retry budget left becomes a durable timer: the task flips to `RETRY_SCHEDULED` with `scheduled_at = now + backoff`, and the normal claim query picks it up directly once due — no promotion sweeper (ADR 0006).
+
+```mermaid
+sequenceDiagram
+    participant Worker
+    participant GRPC as Engine gRPC service
+    participant DB as PostgreSQL
+
+    Worker->>GRPC: CompleteTask(failure)
+    GRPC->>DB: verify lease ownership
+    alt attempts < maxAttempts
+        GRPC->>DB: task -> RETRY_SCHEDULED, scheduled_at = now + backoff; delete lease
+        GRPC->>DB: append TASK_RETRY_SCHEDULED event
+        GRPC-->>Worker: ack
+        Note over Worker,DB: backoff elapses (fixed or exponential, decision C)
+        Worker->>GRPC: FetchTask()
+        GRPC->>DB: claim due READY or RETRY_SCHEDULED task -> RUNNING, attempts+1
+        GRPC-->>Worker: Task (next attempt)
+    else retry budget exhausted
+        GRPC->>DB: task -> FAILED; instance -> FAILED
+        GRPC->>DB: append TASK_FAILED + WORKFLOW_FAILED events
+        GRPC-->>Worker: ack
+    end
+```
+
 ## The gRPC long-poll mechanic
 
 `FetchTask` is a long-lived call: the engine parks it on a virtual thread and polls the queue instead of returning immediately empty-handed.
@@ -69,14 +96,14 @@ sequenceDiagram
 
 ## Task status lifecycle
 
-`PENDING → READY → RUNNING → SUCCEEDED` is the path exercised end-to-end in M1.
+`PENDING → READY → RUNNING → SUCCEEDED` is the happy path. M2 adds the failure loop `RUNNING → RETRY_SCHEDULED → RUNNING` and the terminal `FAILED` when the retry budget runs out.
 
-| Status            | When it appears                                                    |
-|-------------------|------------------------------------------------------------------------|
-| `PENDING`         | Waiting on DAG dependencies (not exercised yet — M1 is single-task).   |
-| `READY`           | Eligible to be leased by a worker on the next `FetchTask` poll.        |
-| `RUNNING`         | Leased by a worker; a `task_leases` row holds the lease.               |
-| `SUCCEEDED`       | Worker reported success. Terminal.                                     |
-| `FAILED`          | Worker reported failure and retries are exhausted. **Arrives with M2.** |
-| `RETRY_SCHEDULED` | Worker failed, retry pending. **Arrives with M2.**                      |
-| `CANCELLED`       | Externally cancelled. **Arrives with M6.**                             |
+| Status            | When it appears                                                                          |
+|-------------------|------------------------------------------------------------------------------------------|
+| `PENDING`         | Waiting on DAG dependencies (not exercised yet — still single-task).                     |
+| `READY`           | Eligible to be leased by a worker on the next `FetchTask` poll.                          |
+| `RUNNING`         | Leased by a worker; a `task_leases` row holds the lease.                                 |
+| `SUCCEEDED`       | Worker reported success. Terminal.                                                       |
+| `FAILED`          | Worker reported failure and retries are exhausted. Terminal.                             |
+| `RETRY_SCHEDULED` | Worker failed, retry pending; claimed directly once `scheduled_at` is due (ADR 0006).    |
+| `CANCELLED`       | Externally cancelled. **Arrives with M6.**                                               |

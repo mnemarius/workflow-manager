@@ -4,8 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.workflowmanager.engine.domain.TaskStatus;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Accepted;
+import com.workflowmanager.engine.orchestrator.CompletionPolicy.Exhausted;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.InstanceOutcome;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Rejected;
+import com.workflowmanager.engine.orchestrator.CompletionPolicy.Retry;
+import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
+import com.workflowmanager.engine.orchestrator.RetryPolicy.BackoffStrategy;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
@@ -42,17 +46,43 @@ class CompletionPolicyTest {
     }
 
     @Test
-    void progress_whenLastTaskSucceeds_succeedsRun() {
-        assertThat(policy.progress(0, false)).isEqualTo(InstanceOutcome.SUCCEED);
+    void resolveFailure_whenAttemptsBelowMax_schedulesRetryAfterBackoff() {
+        var fixed = new RetryPolicy(3, BackoffStrategy.FIXED, 5, 300);
+        var resolution = policy.resolveFailure(1, fixed, now);
+        assertThat(resolution).isEqualTo(new Retry(now.plusSeconds(5)));
     }
 
     @Test
-    void progress_whenTaskFails_failsRun() {
-        assertThat(policy.progress(0, true)).isEqualTo(InstanceOutcome.FAIL);
+    void resolveFailure_exponentialBackoff_growsWithFailedAttempts() {
+        var exponential = new RetryPolicy(4, BackoffStrategy.EXPONENTIAL, 5, 300);
+        assertThat(policy.resolveFailure(1, exponential, now)).isEqualTo(new Retry(now.plusSeconds(5)));
+        assertThat(policy.resolveFailure(2, exponential, now)).isEqualTo(new Retry(now.plusSeconds(10)));
+        assertThat(policy.resolveFailure(3, exponential, now)).isEqualTo(new Retry(now.plusSeconds(20)));
+    }
+
+    @Test
+    void resolveFailure_whenAttemptsEqualMax_exhausts() {
+        var fixed = new RetryPolicy(3, BackoffStrategy.FIXED, 5, 300);
+        assertThat(policy.resolveFailure(3, fixed, now)).isEqualTo(new Exhausted());
+    }
+
+    @Test
+    void progress_whenLastTaskSucceeds_succeedsRun() {
+        assertThat(policy.progress(0, TaskResolution.SUCCEEDED)).isEqualTo(InstanceOutcome.SUCCEED);
+    }
+
+    @Test
+    void progress_whenTaskDeadLettered_failsRun() {
+        assertThat(policy.progress(0, TaskResolution.DEAD_LETTERED)).isEqualTo(InstanceOutcome.FAIL);
+    }
+
+    @Test
+    void progress_whenTaskRetryScheduled_continues() {
+        assertThat(policy.progress(1, TaskResolution.RETRY_SCHEDULED)).isEqualTo(InstanceOutcome.CONTINUE);
     }
 
     @Test
     void progress_whenTasksRemain_continues() {
-        assertThat(policy.progress(2, false)).isEqualTo(InstanceOutcome.CONTINUE);
+        assertThat(policy.progress(2, TaskResolution.SUCCEEDED)).isEqualTo(InstanceOutcome.CONTINUE);
     }
 }
