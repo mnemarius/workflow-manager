@@ -72,6 +72,7 @@ public class WorkflowRepository {
             String type,
             String inputJson,
             int maxAttempts,
+            String retryPolicyJson,
             Instant scheduledAt,
             Instant now) {
         db.insertInto(TASK_INSTANCES)
@@ -80,6 +81,7 @@ public class WorkflowRepository {
                 .set(TI_TYPE, type)
                 .set(TI_STATUS, TaskStatus.READY.name())
                 .set(TI_MAX_ATTEMPTS, maxAttempts)
+                .set(TI_RETRY_POLICY, jsonbOrNull(retryPolicyJson))
                 .set(TI_INPUT, jsonbOrNull(inputJson))
                 .set(TI_SCHEDULED_AT, scheduledAt)
                 .set(TI_UPDATED_AT, now)

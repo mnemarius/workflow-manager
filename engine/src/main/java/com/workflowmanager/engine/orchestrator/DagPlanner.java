@@ -19,8 +19,8 @@ public class DagPlanner {
             String key = node.get("key").asText();
             String type = node.hasNonNull("type") ? node.get("type").asText() : key;
             String input = node.hasNonNull("input") ? node.get("input").toString() : workflowInputJson;
-            int maxAttempts = node.hasNonNull("maxAttempts") ? node.get("maxAttempts").asInt() : 1;
-            tasks.add(new PlannedTask(key, type, input, maxAttempts));
+            RetryPolicy retryPolicy = RetryPolicy.from(node.get("retryPolicy"));
+            tasks.add(new PlannedTask(key, type, input, retryPolicy));
         }
         return List.copyOf(tasks);
     }

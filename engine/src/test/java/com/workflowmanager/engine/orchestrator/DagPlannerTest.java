@@ -27,7 +27,7 @@ class DagPlannerTest {
         assertThat(tasks.get(0).key()).isEqualTo("step1");
         assertThat(tasks.get(0).type()).isEqualTo("echo");
         assertThat(tasks.get(0).inputJson()).contains("\"msg\"");
-        assertThat(tasks.get(0).maxAttempts()).isEqualTo(1);
+        assertThat(tasks.get(0).retryPolicy()).isEqualTo(RetryPolicy.DEFAULT);
     }
 
     @Test
@@ -36,5 +36,16 @@ class DagPlannerTest {
         var tasks = planner.plan(dag, "{\"wf\":true}");
         assertThat(tasks.get(0).type()).isEqualTo("step1");
         assertThat(tasks.get(0).inputJson()).isEqualTo("{\"wf\":true}");
+    }
+
+    @Test
+    void plan_taskWithRetryPolicy_parsesPolicy() {
+        var dag =
+                parse(
+                        "{\"tasks\":[{\"key\":\"step1\",\"retryPolicy\":"
+                                + "{\"maxAttempts\":2,\"backoffStrategy\":\"exponential\"}}]}");
+        var tasks = planner.plan(dag, null);
+        assertThat(tasks.get(0).retryPolicy())
+                .isEqualTo(new RetryPolicy(2, RetryPolicy.BackoffStrategy.EXPONENTIAL, 5, 300));
     }
 }

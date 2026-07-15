@@ -131,12 +131,14 @@ Six tables. Get these right and the rest follows.
 
 ### C. Retry policy
 
-Per-task config stored as JSONB on the task definition:
+Per-task config: a `retryPolicy` object on the task node in the DAG document, persisted as JSONB in `task_instances.retry_policy`. All fields optional; defaults apply per field:
 
-- `max_attempts`
-- `backoff_strategy` — `fixed` or `exponential`
-- `initial_delay`
-- `max_delay`
+| Field                 | Type / values                            | Default |
+|-----------------------|------------------------------------------|---------|
+| `maxAttempts`         | integer ≥ 1                              | 3       |
+| `backoffStrategy`     | `fixed` \| `exponential`                 | `fixed` |
+| `initialDelaySeconds` | integer ≥ 0                              | 5       |
+| `maxDelaySeconds`     | integer ≥ 1 (cap for exponential growth) | 300     |
 
 ### D. Durable timers
 
