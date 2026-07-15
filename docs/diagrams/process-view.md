@@ -2,7 +2,7 @@
 
 > **Keep in sync:** these diagrams describe the system as built. Whenever you change the architecture, modules, runtime flow, or deployment topology, update the affected view in the same change — do not let them drift.
 
-Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat).
+Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat, crashed-worker recovery).
 
 ## Submit → execute happy path
 
@@ -73,6 +73,39 @@ sequenceDiagram
     end
 ```
 
+## Worker crash → reap → re-dispatch
+
+A dead worker stops heartbeating, so its lease expires. The engine's reaper (ADR 0008) runs every `engine.reaper-interval` (default 5s) plus once at startup, and resolves expired leases through the same failure path as a worker-reported failure — but **without backoff**: a crash says nothing bad about the task, so failover is prompt. The expired attempt stays consumed (it was taken at claim).
+
+```mermaid
+sequenceDiagram
+    participant WA as Worker A
+    participant GRPC as Engine gRPC service
+    participant Reaper as Lease reaper (engine)
+    participant DB as PostgreSQL
+    participant WB as Worker B
+
+    WA->>GRPC: FetchTask()
+    GRPC-->>WA: Task (attempt 1)
+    Note over WA: crashes mid-task - no heartbeats, no CompleteTask
+
+    loop every reaper interval + once at startup
+        Reaper->>DB: SELECT RUNNING tasks with lease_expires_at <= now FOR UPDATE SKIP LOCKED
+        DB-->>Reaper: expired task
+        Reaper->>DB: delete lease; append TASK_LEASE_EXPIRED
+        alt attempts < maxAttempts
+            Reaper->>DB: task -> RETRY_SCHEDULED, scheduled_at = now (no backoff)
+        else budget exhausted
+            Reaper->>DB: task -> FAILED; instance -> FAILED
+        end
+    end
+
+    WB->>GRPC: FetchTask()
+    GRPC->>DB: claim due task -> RUNNING, attempts+1
+    GRPC-->>WB: Task (attempt 2)
+    WB->>GRPC: CompleteTask(success)
+```
+
 ## The gRPC long-poll mechanic
 
 `FetchTask` is a long-lived call: the engine parks it on a virtual thread and polls the queue instead of returning immediately empty-handed.
@@ -113,5 +146,5 @@ sequenceDiagram
 | `RUNNING`         | Leased by a worker; a `task_leases` row holds the lease.                                 |
 | `SUCCEEDED`       | Worker reported success. Terminal.                                                       |
 | `FAILED`          | Worker reported failure and retries are exhausted. Terminal.                             |
-| `RETRY_SCHEDULED` | Worker failed, retry pending; claimed directly once `scheduled_at` is due (ADR 0006).    |
+| `RETRY_SCHEDULED` | Retry pending — worker failure (backoff) or lease expiry (no backoff); ADRs 0006, 0008.  |
 | `CANCELLED`       | Externally cancelled. **Arrives with M6.**                                               |

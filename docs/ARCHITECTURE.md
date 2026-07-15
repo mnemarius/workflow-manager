@@ -163,11 +163,11 @@ The engine guarantees **at-least-once** delivery. Workers must be idempotent. Th
 
 ### G. Crash recovery
 
-Postgres is the source of truth. On engine startup:
+Postgres is the source of truth. Recovery runs on engine startup and every `engine.reaper-interval` (default 5s):
 
-1. Tasks with `RUNNING` status whose lease expired → reset to `READY`.
-2. Scheduled tasks whose `scheduled_at` has passed → re-enqueue.
-3. Any unsent `outbox` rows → process.
+1. **Implemented (M2, ADR 0008).** `RUNNING` tasks whose lease expired are reaped: lease deleted, `TASK_LEASE_EXPIRED` appended, then the shared failure path retries **without backoff** (`scheduled_at = now`) or dead-letters when the attempt budget is spent. Expiry consumes the attempt taken at claim.
+2. **Implemented (M2, via ADR 0006).** Scheduled tasks whose `scheduled_at` has passed need no re-enqueue step — the claim query picks up due `READY`/`RETRY_SCHEDULED` rows directly.
+3. **Deferred.** Any unsent `outbox` rows → process (no outbox producer exists yet; see FUTURE.md).
 
 No in-memory state matters. This is the discipline.
 

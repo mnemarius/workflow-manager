@@ -34,7 +34,9 @@ scope rules). Nothing here is a commitment.
   at a time (ADR 0007). If workers ever run many concurrent tasks, a single bidirectional
   heartbeat stream per worker (batching renewals, pushing `LeaseLost` eagerly) would beat N
   unary calls per interval.
-- Retry backoff strategies and a dead-letter queue (M2).
+- **Transactional outbox drain on recovery.** Decision G item 3: no `outbox` producer exists
+  yet, so the reaper's startup pass has nothing to drain. When side effects start flowing
+  through the outbox, add the drain to the recovery pass.
 - Multi-step DAG dependencies and richer capability matching (M3).
 - API-key auth on the REST and gRPC surfaces (ARCHITECTURE §Security).
 - Trace-context propagation engine ↔ worker over gRPC metadata (M8).

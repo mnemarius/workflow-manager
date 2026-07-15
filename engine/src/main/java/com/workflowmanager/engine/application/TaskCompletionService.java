@@ -1,14 +1,9 @@
 package com.workflowmanager.engine.application;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.workflowmanager.engine.domain.EventType;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy;
-import com.workflowmanager.engine.orchestrator.CompletionPolicy.Exhausted;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Rejected;
-import com.workflowmanager.engine.orchestrator.CompletionPolicy.Retry;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
-import com.workflowmanager.engine.orchestrator.RetryPolicy;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import com.workflowmanager.engine.persistence.WorkflowRepository.RunningTask;
 import java.time.Clock;
@@ -28,14 +23,17 @@ public class TaskCompletionService {
 
     private final WorkflowRepository repo;
     private final CompletionPolicy policy;
-    private final ObjectMapper mapper;
+    private final TaskFailureResolver failureResolver;
     private final Clock clock;
 
     public TaskCompletionService(
-            WorkflowRepository repo, CompletionPolicy policy, ObjectMapper mapper, Clock clock) {
+            WorkflowRepository repo,
+            CompletionPolicy policy,
+            TaskFailureResolver failureResolver,
+            Clock clock) {
         this.repo = repo;
         this.policy = policy;
-        this.mapper = mapper;
+        this.failureResolver = failureResolver;
         this.clock = clock;
     }
 
@@ -67,24 +65,17 @@ public class TaskCompletionService {
                 return false;
             }
 
-            TaskResolution resolution =
-                    success
-                            ? applySuccess(instanceId, taskId, outputJson, now)
-                            : applyFailure(instanceId, running, errorMessage, now);
-
-            long open = repo.countOpenTasks(instanceId);
-            switch (policy.progress(open, resolution)) {
-                case SUCCEED -> {
-                    repo.succeedInstance(instanceId, outputJson, now);
-                    repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUCCEEDED, null);
-                    log.info("workflow succeeded");
-                }
-                case FAIL -> {
-                    repo.failInstance(instanceId, now);
-                    repo.insertEvent(instanceId, null, EventType.WORKFLOW_FAILED, null);
-                    log.info("workflow failed");
-                }
-                case CONTINUE -> {}
+            if (success) {
+                applySuccess(instanceId, taskId, outputJson, now);
+            } else {
+                failureResolver.resolve(
+                        instanceId,
+                        taskId,
+                        running.attempts(),
+                        running.retryPolicyJson(),
+                        errorMessage,
+                        now,
+                        true);
             }
             return true;
         } finally {
@@ -93,58 +84,16 @@ public class TaskCompletionService {
         }
     }
 
-    private TaskResolution applySuccess(UUID instanceId, UUID taskId, String outputJson, Instant now) {
+    private void applySuccess(UUID instanceId, UUID taskId, String outputJson, Instant now) {
         repo.completeTaskSuccess(taskId, outputJson, now);
         repo.insertEvent(instanceId, taskId, EventType.TASK_SUCCEEDED, null);
-        return TaskResolution.SUCCEEDED;
-    }
-
-    private TaskResolution applyFailure(
-            UUID instanceId, RunningTask running, String errorMessage, Instant now) {
-        RetryPolicy retryPolicy = parsePolicy(running.retryPolicyJson());
-        return switch (policy.resolveFailure(running.attempts(), retryPolicy, now)) {
-            case Retry retry -> {
-                repo.scheduleRetry(running.taskId(), retry.nextRunAt(), now);
-                repo.insertEvent(
-                        instanceId,
-                        running.taskId(),
-                        EventType.TASK_RETRY_SCHEDULED,
-                        retryData(errorMessage, retry.nextRunAt()));
-                log.info(
-                        "task retry scheduled attempts={} maxAttempts={} nextRunAt={}",
-                        running.attempts(),
-                        retryPolicy.maxAttempts(),
-                        retry.nextRunAt());
-                yield TaskResolution.RETRY_SCHEDULED;
+        switch (policy.progress(repo.countOpenTasks(instanceId), TaskResolution.SUCCEEDED)) {
+            case SUCCEED -> {
+                repo.succeedInstance(instanceId, outputJson, now);
+                repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUCCEEDED, null);
+                log.info("workflow succeeded");
             }
-            case Exhausted ignored -> {
-                repo.completeTaskFailure(running.taskId(), now);
-                repo.insertEvent(
-                        instanceId, running.taskId(), EventType.TASK_FAILED, errorData(errorMessage));
-                yield TaskResolution.DEAD_LETTERED;
-            }
-        };
-    }
-
-    private RetryPolicy parsePolicy(String json) {
-        if (json == null) {
-            return RetryPolicy.DEFAULT;
+            case FAIL, CONTINUE -> {}
         }
-        try {
-            return RetryPolicy.from(mapper.readTree(json));
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("malformed retry_policy JSON", e);
-        }
-    }
-
-    private String retryData(String errorMessage, Instant nextRunAt) {
-        return mapper.createObjectNode()
-                .put("error", errorMessage)
-                .put("nextRunAt", nextRunAt.toString())
-                .toString();
-    }
-
-    private String errorData(String errorMessage) {
-        return errorMessage == null ? null : mapper.createObjectNode().put("error", errorMessage).toString();
     }
 }

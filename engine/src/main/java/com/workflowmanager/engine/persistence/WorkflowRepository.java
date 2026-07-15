@@ -34,6 +34,14 @@ public class WorkflowRepository {
             int maxAttempts,
             String retryPolicyJson) {}
 
+    public record ExpiredLeaseTask(
+            UUID taskId,
+            UUID workflowInstanceId,
+            String workerId,
+            int attempts,
+            int maxAttempts,
+            String retryPolicyJson) {}
+
     public record InstanceRow(
             UUID id, WorkflowStatus status, String output, Instant startedAt, Instant finishedAt) {}
 
@@ -171,6 +179,37 @@ public class WorkflowRepository {
                                         dataOrNull(r.get(TI_RETRY_POLICY))));
     }
 
+    /**
+     * Locks RUNNING tasks whose lease has expired (ADR 0008). SKIP LOCKED keeps a concurrent
+     * reaper (multi-engine, M7) or an in-flight completion from double-processing a task.
+     */
+    public List<ExpiredLeaseTask> claimExpiredRunningTasks(Instant now) {
+        return db.select(
+                        TI_ID,
+                        TI_WORKFLOW_INSTANCE_ID,
+                        TL_WORKER_ID,
+                        TI_ATTEMPTS,
+                        TI_MAX_ATTEMPTS,
+                        TI_RETRY_POLICY)
+                .from(TASK_INSTANCES)
+                .join(TASK_LEASES)
+                .on(TL_TASK_ID.eq(TI_ID))
+                .where(TI_STATUS.eq(TaskStatus.RUNNING.name()))
+                .and(TL_LEASE_EXPIRES_AT.le(now))
+                .forUpdate()
+                .of(TASK_INSTANCES)
+                .skipLocked()
+                .fetch(
+                        r ->
+                                new ExpiredLeaseTask(
+                                        r.get(TI_ID),
+                                        r.get(TI_WORKFLOW_INSTANCE_ID),
+                                        r.get(TL_WORKER_ID),
+                                        r.get(TI_ATTEMPTS),
+                                        r.get(TI_MAX_ATTEMPTS),
+                                        dataOrNull(r.get(TI_RETRY_POLICY))));
+    }
+
     public void renewLease(UUID taskId, Instant newExpiry) {
         db.update(TASK_LEASES)
                 .set(TL_LEASE_EXPIRES_AT, newExpiry)
@@ -278,7 +317,7 @@ public class WorkflowRepository {
                                         dataOrNull(r.get(TI_OUTPUT))));
     }
 
-    private void releaseLease(UUID taskId) {
+    public void releaseLease(UUID taskId) {
         db.deleteFrom(TASK_LEASES).where(TL_TASK_ID.eq(taskId)).execute();
     }
 
