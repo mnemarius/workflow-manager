@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.workflowmanager.engine.domain.TaskStatus;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Accepted;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Exhausted;
+import com.workflowmanager.engine.orchestrator.CompletionPolicy.Held;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.InstanceOutcome;
+import com.workflowmanager.engine.orchestrator.CompletionPolicy.NotHeld;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Rejected;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Retry;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
@@ -43,6 +45,36 @@ class CompletionPolicyTest {
     void decide_whenTaskNotRunning_rejects() {
         var decision = policy.decide(TaskStatus.SUCCEEDED, "worker-1", future, "worker-1", now, true);
         assertThat(decision).isInstanceOf(Rejected.class);
+    }
+
+    @Test
+    void checkLease_whenOwnerHoldsLiveLease_held() {
+        assertThat(policy.checkLease(TaskStatus.RUNNING, "worker-1", future, "worker-1", now))
+                .isEqualTo(new Held());
+    }
+
+    @Test
+    void checkLease_whenLeaseHeldByAnotherWorker_notHeld() {
+        assertThat(policy.checkLease(TaskStatus.RUNNING, "worker-1", future, "worker-2", now))
+                .isInstanceOf(NotHeld.class);
+    }
+
+    @Test
+    void checkLease_whenLeaseExpired_notHeld() {
+        assertThat(policy.checkLease(TaskStatus.RUNNING, "worker-1", now.minusSeconds(1), "worker-1", now))
+                .isInstanceOf(NotHeld.class);
+    }
+
+    @Test
+    void checkLease_whenNoLeaseRow_notHeld() {
+        assertThat(policy.checkLease(TaskStatus.RUNNING, null, null, "worker-1", now))
+                .isInstanceOf(NotHeld.class);
+    }
+
+    @Test
+    void checkLease_whenTaskNotRunning_notHeld() {
+        assertThat(policy.checkLease(TaskStatus.RETRY_SCHEDULED, "worker-1", future, "worker-1", now))
+                .isInstanceOf(NotHeld.class);
     }
 
     @Test

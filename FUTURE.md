@@ -30,7 +30,10 @@ scope rules). Nothing here is a commitment.
 
 ## Beyond v1 (see milestones M2+)
 
-- Lease heartbeat / renewal RPC and expired-lease recovery (M2).
+- **Streaming lease heartbeat.** The heartbeat is a unary RPC because a worker runs one task
+  at a time (ADR 0007). If workers ever run many concurrent tasks, a single bidirectional
+  heartbeat stream per worker (batching renewals, pushing `LeaseLost` eagerly) would beat N
+  unary calls per interval.
 - Retry backoff strategies and a dead-letter queue (M2).
 - Multi-step DAG dependencies and richer capability matching (M3).
 - API-key auth on the REST and gRPC surfaces (ARCHITECTURE §Security).

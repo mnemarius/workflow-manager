@@ -12,6 +12,7 @@ option java_outer_classname = "WorkerServiceProto";
 service WorkerService {
   rpc FetchTask(FetchTaskRequest) returns (FetchTaskResponse);
   rpc CompleteTask(CompleteTaskRequest) returns (CompleteTaskResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 message FetchTaskRequest {
@@ -56,4 +57,24 @@ message Failure {
 
 message CompleteTaskResponse {
   bool accepted = 1; // false when the lease was lost/reassigned (stale completion)
+}
+
+message HeartbeatRequest {
+  string task_id = 1;
+  string worker_id = 2;
+}
+
+message HeartbeatResponse {
+  oneof result {
+    LeaseRenewed renewed = 1;
+    LeaseLost lost = 2;
+  }
+}
+
+message LeaseRenewed {
+  string lease_expires_at = 1; // RFC3339 UTC
+}
+
+message LeaseLost {
+  string reason = 1; // the worker must stop the task and not report completion
 }

@@ -155,7 +155,7 @@ A "sleep 3 days" step is just a task with `scheduled_at = now() + 3 days` and a 
 
 ### E. Worker → engine protocol
 
-**Long-polling gRPC.** Worker calls `FetchTask(workerCapabilities)`; engine holds the call open up to 30 s waiting for matching work. Fewer round-trips than HTTP polling, no WebSocket complexity.
+**Long-polling gRPC.** Worker calls `FetchTask(workerCapabilities)`; engine holds the call open up to 30 s waiting for matching work. Fewer round-trips than HTTP polling, no WebSocket complexity. While running a task the worker renews its lease with a unary `Heartbeat(task_id, worker_id)` every ~⅓ of the remaining lease; the engine answers `LeaseRenewed` or `LeaseLost`, and on `LeaseLost` the worker interrupts the handler and does not report completion (ADR 0007).
 
 ### F. Idempotency contract
 

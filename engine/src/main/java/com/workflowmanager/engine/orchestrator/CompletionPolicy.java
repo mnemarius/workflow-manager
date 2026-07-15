@@ -18,6 +18,12 @@ public class CompletionPolicy {
 
     public record Rejected(String reason) implements Decision {}
 
+    public sealed interface LeaseCheck permits Held, NotHeld {}
+
+    public record Held() implements LeaseCheck {}
+
+    public record NotHeld(String reason) implements LeaseCheck {}
+
     public sealed interface FailureResolution permits Retry, Exhausted {}
 
     public record Retry(Instant nextRunAt) implements FailureResolution {}
@@ -43,19 +49,32 @@ public class CompletionPolicy {
             String reportingWorkerId,
             Instant now,
             boolean success) {
+        return switch (checkLease(status, leaseWorkerId, leaseExpiresAt, reportingWorkerId, now)) {
+            case Held ignored -> new Accepted(success);
+            case NotHeld notHeld -> new Rejected(notHeld.reason());
+        };
+    }
+
+    /** The one stale-worker gate: completion and heartbeat renewal both pass through here. */
+    public LeaseCheck checkLease(
+            TaskStatus status,
+            String leaseWorkerId,
+            Instant leaseExpiresAt,
+            String claimingWorkerId,
+            Instant now) {
         if (status != TaskStatus.RUNNING) {
-            return new Rejected("task is " + status + ", not RUNNING");
+            return new NotHeld("task is " + status + ", not RUNNING");
         }
         if (leaseWorkerId == null || leaseExpiresAt == null) {
-            return new Rejected("no active lease");
+            return new NotHeld("no active lease");
         }
-        if (!leaseWorkerId.equals(reportingWorkerId)) {
-            return new Rejected("lease held by another worker");
+        if (!leaseWorkerId.equals(claimingWorkerId)) {
+            return new NotHeld("lease held by another worker");
         }
         if (!leaseExpiresAt.isAfter(now)) {
-            return new Rejected("lease expired");
+            return new NotHeld("lease expired");
         }
-        return new Accepted(success);
+        return new Held();
     }
 
     public FailureResolution resolveFailure(int attempts, RetryPolicy policy, Instant now) {

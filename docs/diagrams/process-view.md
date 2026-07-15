@@ -2,7 +2,7 @@
 
 > **Keep in sync:** these diagrams describe the system as built. Whenever you change the architecture, modules, runtime flow, or deployment topology, update the affected view in the same change — do not let them drift.
 
-Runtime behavior as of M2 (single-task submit + execute, retries with backoff).
+Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat).
 
 ## Submit → execute happy path
 
@@ -23,9 +23,17 @@ sequenceDiagram
     GRPC->>DB: SELECT ... FOR UPDATE SKIP LOCKED
     DB-->>GRPC: one READY task
     GRPC->>DB: INSERT task_leases row; task READY -> RUNNING
-    GRPC-->>Worker: Task
+    GRPC-->>Worker: Task (with lease_expires_at)
 
-    Worker->>Worker: run handler
+    par handler on its own virtual thread
+        Worker->>Worker: run handler
+    and heartbeat every ~1/3 of remaining lease
+        loop while handler runs
+            Worker->>GRPC: Heartbeat(task_id, worker_id)
+            GRPC->>DB: verify lease ownership; extend lease_expires_at
+            GRPC-->>Worker: LeaseRenewed (or LeaseLost -> interrupt handler, no CompleteTask)
+        end
+    end
     Worker->>GRPC: CompleteTask(success)
     GRPC->>DB: verify lease ownership
     GRPC->>DB: task -> SUCCEEDED

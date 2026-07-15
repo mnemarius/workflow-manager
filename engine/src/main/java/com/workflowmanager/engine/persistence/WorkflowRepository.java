@@ -171,6 +171,13 @@ public class WorkflowRepository {
                                         dataOrNull(r.get(TI_RETRY_POLICY))));
     }
 
+    public void renewLease(UUID taskId, Instant newExpiry) {
+        db.update(TASK_LEASES)
+                .set(TL_LEASE_EXPIRES_AT, newExpiry)
+                .where(TL_TASK_ID.eq(taskId))
+                .execute();
+    }
+
     public void completeTaskSuccess(UUID taskId, String outputJson, Instant now) {
         db.update(TASK_INSTANCES)
                 .set(TI_STATUS, TaskStatus.SUCCEEDED.name())
