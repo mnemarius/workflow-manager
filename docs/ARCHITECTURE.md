@@ -77,6 +77,19 @@ The repository contains three artifacts:
 
 ---
 
+## Non-functional requirements
+
+The project's guiding quality attributes:
+
+- **Scalability**
+- **Modifiability**
+- **Deployability**
+- **Availability**
+
+These are lenses, not a checklist. For every task, interpret what each attribute means in that task's context and let the relevant ones shape the solution.
+
+---
+
 ## Data model
 
 Six tables. Get these right and the rest follows.
