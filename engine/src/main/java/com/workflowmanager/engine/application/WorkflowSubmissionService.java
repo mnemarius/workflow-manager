@@ -47,6 +47,7 @@ public class WorkflowSubmissionService {
                         task.inputJson(),
                         task.retryPolicy().maxAttempts(),
                         task.retryPolicy().toJson(),
+                        task.timeoutSeconds(),
                         now,
                         now);
             }

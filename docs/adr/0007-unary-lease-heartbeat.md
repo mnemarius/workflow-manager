@@ -19,10 +19,14 @@ check as `CompleteTask`** and answers `LeaseRenewed(lease_expires_at)` or
 the SDK interrupts the handler and suppresses `CompleteTask`; the engine's reaper hands the
 task to another worker.
 
-Renewals are not unlimited: they are **capped by the attempt deadline** (per-task timeout,
-M2 step 5). A heartbeat past that deadline is answered `LeaseLost`, so a hung-but-heartbeating
-worker cannot hold a task forever. The contract is stated here; the cap itself ships with the
-timeout work.
+Renewals are not unlimited: they are **capped by the attempt deadline** (per-task
+`timeoutSeconds`). Every grant and renewal expires at `min(now + leaseDuration,
+attempt_start + timeout)` ([LeasePolicy.java](../../engine/src/main/java/com/workflowmanager/engine/orchestrator/LeasePolicy.java));
+a heartbeat at or past the deadline is answered `LeaseLost("TIMED_OUT")`, so a
+hung-but-heartbeating worker cannot hold a task forever. The task also carries
+`attempt_deadline` on the wire, so the SDK aborts the handler at the deadline without
+waiting for a denied heartbeat. The lapsed lease is then reclaimed by the same reaper as a
+crash (ADR 0008), classified `TASK_TIMED_OUT` and retried *with* backoff.
 
 A unary RPC (not a bidirectional stream) fits because a worker holds exactly one task at a
 time — one cheap call every few seconds, no stream lifecycle to manage, and the same

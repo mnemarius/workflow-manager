@@ -17,6 +17,7 @@
           "key": { "type": "string", "minLength": 1 },
           "type": { "type": "string", "minLength": 1 },
           "input": { "type": "object" },
+          "timeoutSeconds": { "type": "integer", "minimum": 1 },
           "retryPolicy": {
             "type": "object",
             "additionalProperties": false,

@@ -22,7 +22,13 @@ import org.springframework.stereotype.Repository;
 public class WorkflowRepository {
 
     public record ClaimedTask(
-            UUID taskId, String taskKey, String type, String input, int attempts, UUID workflowInstanceId) {}
+            UUID taskId,
+            String taskKey,
+            String type,
+            String input,
+            int attempts,
+            UUID workflowInstanceId,
+            Integer timeoutSeconds) {}
 
     public record RunningTask(
             UUID taskId,
@@ -32,7 +38,9 @@ public class WorkflowRepository {
             Instant leaseExpiresAt,
             int attempts,
             int maxAttempts,
-            String retryPolicyJson) {}
+            String retryPolicyJson,
+            Instant startedAt,
+            Integer timeoutSeconds) {}
 
     public record ExpiredLeaseTask(
             UUID taskId,
@@ -40,7 +48,9 @@ public class WorkflowRepository {
             String workerId,
             int attempts,
             int maxAttempts,
-            String retryPolicyJson) {}
+            String retryPolicyJson,
+            Instant startedAt,
+            Integer timeoutSeconds) {}
 
     public record InstanceRow(
             UUID id, WorkflowStatus status, String output, Instant startedAt, Instant finishedAt) {}
@@ -84,6 +94,7 @@ public class WorkflowRepository {
             String inputJson,
             int maxAttempts,
             String retryPolicyJson,
+            Integer timeoutSeconds,
             Instant scheduledAt,
             Instant now) {
         db.insertInto(TASK_INSTANCES)
@@ -92,6 +103,7 @@ public class WorkflowRepository {
                 .set(TI_TYPE, type)
                 .set(TI_STATUS, TaskStatus.READY.name())
                 .set(TI_MAX_ATTEMPTS, maxAttempts)
+                .set(TI_TIMEOUT_SECONDS, timeoutSeconds)
                 .set(TI_RETRY_POLICY, jsonbOrNull(retryPolicyJson))
                 .set(TI_INPUT, jsonbOrNull(inputJson))
                 .set(TI_SCHEDULED_AT, scheduledAt)
@@ -110,7 +122,14 @@ public class WorkflowRepository {
         if (!capabilities.isEmpty()) {
             condition = condition.and(TI_TYPE.in(capabilities));
         }
-        return db.select(TI_ID, TI_TASK_KEY, TI_TYPE, TI_INPUT, TI_ATTEMPTS, TI_WORKFLOW_INSTANCE_ID)
+        return db.select(
+                        TI_ID,
+                        TI_TASK_KEY,
+                        TI_TYPE,
+                        TI_INPUT,
+                        TI_ATTEMPTS,
+                        TI_WORKFLOW_INSTANCE_ID,
+                        TI_TIMEOUT_SECONDS)
                 .from(TASK_INSTANCES)
                 .where(condition)
                 .orderBy(TI_SCHEDULED_AT.asc())
@@ -125,7 +144,8 @@ public class WorkflowRepository {
                                         r.get(TI_TYPE),
                                         dataOrNull(r.get(TI_INPUT)),
                                         r.get(TI_ATTEMPTS),
-                                        r.get(TI_WORKFLOW_INSTANCE_ID)));
+                                        r.get(TI_WORKFLOW_INSTANCE_ID),
+                                        r.get(TI_TIMEOUT_SECONDS)));
     }
 
     public void markTaskRunning(UUID taskId, String workerId, Instant now, Instant leaseExpiresAt) {
@@ -161,7 +181,9 @@ public class WorkflowRepository {
                         TL_LEASE_EXPIRES_AT,
                         TI_ATTEMPTS,
                         TI_MAX_ATTEMPTS,
-                        TI_RETRY_POLICY)
+                        TI_RETRY_POLICY,
+                        TI_STARTED_AT,
+                        TI_TIMEOUT_SECONDS)
                 .from(TASK_INSTANCES)
                 .leftJoin(TASK_LEASES)
                 .on(TL_TASK_ID.eq(TI_ID))
@@ -176,7 +198,9 @@ public class WorkflowRepository {
                                         r.get(TL_LEASE_EXPIRES_AT),
                                         r.get(TI_ATTEMPTS),
                                         r.get(TI_MAX_ATTEMPTS),
-                                        dataOrNull(r.get(TI_RETRY_POLICY))));
+                                        dataOrNull(r.get(TI_RETRY_POLICY)),
+                                        r.get(TI_STARTED_AT),
+                                        r.get(TI_TIMEOUT_SECONDS)));
     }
 
     /**
@@ -190,7 +214,9 @@ public class WorkflowRepository {
                         TL_WORKER_ID,
                         TI_ATTEMPTS,
                         TI_MAX_ATTEMPTS,
-                        TI_RETRY_POLICY)
+                        TI_RETRY_POLICY,
+                        TI_STARTED_AT,
+                        TI_TIMEOUT_SECONDS)
                 .from(TASK_INSTANCES)
                 .join(TASK_LEASES)
                 .on(TL_TASK_ID.eq(TI_ID))
@@ -207,7 +233,9 @@ public class WorkflowRepository {
                                         r.get(TL_WORKER_ID),
                                         r.get(TI_ATTEMPTS),
                                         r.get(TI_MAX_ATTEMPTS),
-                                        dataOrNull(r.get(TI_RETRY_POLICY))));
+                                        dataOrNull(r.get(TI_RETRY_POLICY)),
+                                        r.get(TI_STARTED_AT),
+                                        r.get(TI_TIMEOUT_SECONDS)));
     }
 
     public void renewLease(UUID taskId, Instant newExpiry) {

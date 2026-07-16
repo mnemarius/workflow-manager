@@ -31,9 +31,11 @@ message Task {
   string task_id = 1;
   string task_key = 2;
   string type = 3;
-  string input = 4;            // opaque JSON; the engine never parses payloads
+  string input = 4;             // opaque JSON; the engine never parses payloads
   int32 attempt = 5;
-  string lease_expires_at = 6; // RFC3339 UTC
+  string lease_expires_at = 6;  // RFC3339 UTC
+  string attempt_deadline = 7;  // RFC3339 UTC; empty = unbounded attempt. The SDK aborts the
+                                // handler at this deadline; renewals past it are denied (TIMED_OUT).
 }
 
 message NoTask {}

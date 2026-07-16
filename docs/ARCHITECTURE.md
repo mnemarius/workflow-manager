@@ -98,7 +98,7 @@ Six tables. Get these right and the rest follows.
 |------------------------|------------------------------------------------------------------------------------------------------|
 | `workflow_definitions` | Versioned DAG templates. `(id, name, version, dag JSONB, created_at)`.                               |
 | `workflow_instances`   | One row per submitted workflow run. `(id, definition_id, status, input JSONB, output JSONB, …)`.     |
-| `task_instances`       | One row per step in a workflow run. Status, attempts, scheduled/started/finished timestamps.         |
+| `task_instances`       | One row per step in a workflow run. Status, attempts, per-attempt timeout, scheduled/started/finished timestamps. |
 | `task_leases`          | Currently-held tasks. `(task_id, worker_id, lease_expires_at)` — drives crashed-worker recovery.     |
 | `events`               | Append-only log of every state transition. Audit trail, debug log, replay source.                    |
 | `outbox`               | Pending side effects (task enqueue, external notifications). Drained transactionally.                |
@@ -171,7 +171,11 @@ Postgres is the source of truth. Recovery runs on engine startup and every `engi
 
 No in-memory state matters. This is the discipline.
 
-### H. Concurrency model
+### H. Timeouts vs. leases
+
+The lease is a **liveness** deadline — short, renewable by heartbeat, it only bounds crash detection. The optional per-task `timeoutSeconds` (task node field, null = unbounded) is the attempt's **absolute execution budget**, measured from the attempt's claim. Enforcement is a single rule: every lease grant or renewal expires at `min(now + lease-duration, attempt_start + timeout)`. Past the deadline a renewal is denied (`LeaseLost` reason `TIMED_OUT`) and the SDK aborts the handler, so the lease inevitably lapses and the **same reaper** that recovers crashes reclaims the row — classified as `TASK_TIMED_OUT` and retried *with* backoff (an overrun blames the task; a crash blames the worker, decision G). One recovery mechanism covers both crash and overrun. See ADR 0007.
+
+### I. Concurrency model
 
 The orchestrator's per-workflow logic is **single-threaded**. Parallelism comes from running many workflows concurrently, not from parallelizing the scheduling of one workflow's steps. Much simpler, good enough.
 

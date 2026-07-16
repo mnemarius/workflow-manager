@@ -50,6 +50,8 @@ final class Schema {
     static final Field<String> TI_STATUS = field(name("status"), SQLDataType.VARCHAR);
     static final Field<Integer> TI_ATTEMPTS = field(name("attempts"), SQLDataType.INTEGER);
     static final Field<Integer> TI_MAX_ATTEMPTS = field(name("max_attempts"), SQLDataType.INTEGER);
+    static final Field<Integer> TI_TIMEOUT_SECONDS =
+            field(name("timeout_seconds"), SQLDataType.INTEGER);
     static final Field<JSONB> TI_RETRY_POLICY = field(name("retry_policy"), SQLDataType.JSONB);
     static final Field<JSONB> TI_INPUT = field(name("input"), SQLDataType.JSONB);
     static final Field<JSONB> TI_OUTPUT = field(name("output"), SQLDataType.JSONB);

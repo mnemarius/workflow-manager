@@ -2,7 +2,7 @@
 
 > **Keep in sync:** these diagrams describe the system as built. Whenever you change the architecture, modules, runtime flow, or deployment topology, update the affected view in the same change — do not let them drift.
 
-Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat, crashed-worker recovery).
+Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat, crashed-worker recovery, per-attempt timeouts).
 
 ## Submit → execute happy path
 
@@ -75,7 +75,7 @@ sequenceDiagram
 
 ## Worker crash → reap → re-dispatch
 
-A dead worker stops heartbeating, so its lease expires. The engine's reaper (ADR 0008) runs every `engine.reaper-interval` (default 5s) plus once at startup, and resolves expired leases through the same failure path as a worker-reported failure — but **without backoff**: a crash says nothing bad about the task, so failover is prompt. The expired attempt stays consumed (it was taken at claim).
+A dead worker stops heartbeating, so its lease expires. The engine's reaper (ADR 0008) runs every `engine.reaper-interval` (default 5s) plus once at startup, and resolves expired leases through the same failure path as a worker-reported failure — but **without backoff**: a crash says nothing bad about the task, so failover is prompt. The expired attempt stays consumed (it was taken at claim). The same pass enforces per-attempt timeouts (decision H): lease grants are capped at `attempt_start + timeout`, so an overrun lapses like a crash — the reaper classifies it `TASK_TIMED_OUT` and retries **with** backoff.
 
 ```mermaid
 sequenceDiagram
@@ -92,9 +92,9 @@ sequenceDiagram
     loop every reaper interval + once at startup
         Reaper->>DB: SELECT RUNNING tasks with lease_expires_at <= now FOR UPDATE SKIP LOCKED
         DB-->>Reaper: expired task
-        Reaper->>DB: delete lease; append TASK_LEASE_EXPIRED
+        Reaper->>DB: delete lease; append TASK_TIMED_OUT (past attempt deadline) or TASK_LEASE_EXPIRED
         alt attempts < maxAttempts
-            Reaper->>DB: task -> RETRY_SCHEDULED, scheduled_at = now (no backoff)
+            Reaper->>DB: task -> RETRY_SCHEDULED (timed out: now + backoff; crashed: now)
         else budget exhausted
             Reaper->>DB: task -> FAILED; instance -> FAILED
         end
@@ -132,7 +132,7 @@ sequenceDiagram
 
 ## Concurrency notes
 
-- **Per-workflow orchestration is single-threaded** (decision H). Parallelism comes from many workflows running concurrently, not from parallelizing one workflow's own scheduling.
+- **Per-workflow orchestration is single-threaded** (decision I). Parallelism comes from many workflows running concurrently, not from parallelizing one workflow's own scheduling.
 - **At-least-once delivery** (decision F): a lease can expire and be re-handed to another worker, or a worker can crash after finishing but before acking. Handlers **must be idempotent** — this is a load-bearing product contract, not an implementation detail.
 
 ## Task status lifecycle
@@ -146,5 +146,5 @@ sequenceDiagram
 | `RUNNING`         | Leased by a worker; a `task_leases` row holds the lease.                                 |
 | `SUCCEEDED`       | Worker reported success. Terminal.                                                       |
 | `FAILED`          | Worker reported failure and retries are exhausted. Terminal.                             |
-| `RETRY_SCHEDULED` | Retry pending — worker failure (backoff) or lease expiry (no backoff); ADRs 0006, 0008.  |
+| `RETRY_SCHEDULED` | Retry pending — worker failure or timeout (backoff), lease expiry (no backoff); ADRs 0006–0008. |
 | `CANCELLED`       | Externally cancelled. **Arrives with M6.**                                               |

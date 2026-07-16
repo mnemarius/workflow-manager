@@ -40,10 +40,11 @@ class LeaseReaperIT {
 
     private record Running(UUID instanceId, UUID taskId) {}
 
-    private Running setupRunningTask(String type, String retryPolicyJson, Instant now) {
+    private Running setupRunningTask(
+            String type, String retryPolicyJson, Integer timeoutSeconds, Instant now) {
         UUID defId = repo.upsertDefinition(type, 1, "{\"tasks\":[{\"key\":\"step1\"}]}");
         UUID instanceId = repo.insertInstance(defId, null, now);
-        repo.insertReadyTask(instanceId, "step1", type, null, 3, retryPolicyJson, now, now);
+        repo.insertReadyTask(instanceId, "step1", type, null, 3, retryPolicyJson, timeoutSeconds, now, now);
         var claimed = repo.claimReadyTask(List.of(type), now).orElseThrow();
         repo.markTaskRunning(claimed.taskId(), "crashed-worker", now, now.plus(LEASE));
         repo.markInstanceRunning(instanceId, now);
@@ -59,7 +60,7 @@ class LeaseReaperIT {
     @Test
     void reapExpired_budgetLeft_retriesImmediatelyAndKeepsWorkflowRunning() {
         Instant now = clock.instant();
-        Running running = setupRunningTask("reap-retry", null, now);
+        Running running = setupRunningTask("reap-retry", null, null, now);
         Instant afterExpiry = now.plus(LEASE).plusSeconds(1);
 
         reaper.reapExpired(afterExpiry);
@@ -82,7 +83,7 @@ class LeaseReaperIT {
     @Test
     void reapExpired_budgetExhausted_failsTaskAndWorkflow() {
         Instant now = clock.instant();
-        Running running = setupRunningTask("reap-exhaust", "{\"maxAttempts\":1}", now);
+        Running running = setupRunningTask("reap-exhaust", "{\"maxAttempts\":1}", null, now);
         Instant afterExpiry = now.plus(LEASE).plusSeconds(1);
 
         reaper.reapExpired(afterExpiry);
@@ -95,9 +96,30 @@ class LeaseReaperIT {
     }
 
     @Test
+    void reapExpired_pastAttemptDeadline_classifiesTimedOutAndRetriesWithBackoff() {
+        Instant now = clock.instant();
+        Running running =
+                setupRunningTask(
+                        "reap-timeout", "{\"maxAttempts\":3,\"initialDelaySeconds\":7}", 60, now);
+        Instant afterDeadline = now.plusSeconds(61);
+
+        reaper.reapExpired(afterDeadline);
+
+        var tasks = repo.findTasks(running.instanceId());
+        assertThat(tasks.get(0).status()).isEqualTo(TaskStatus.RETRY_SCHEDULED);
+        assertThat(eventTypes(running.instanceId())).contains("TASK_TIMED_OUT", "TASK_RETRY_SCHEDULED");
+        assertThat(eventTypes(running.instanceId())).doesNotContain("TASK_LEASE_EXPIRED");
+
+        // With backoff: not claimable at reap time, claimable once the 7s delay elapses.
+        assertThat(repo.claimReadyTask(List.of("reap-timeout"), afterDeadline)).isEmpty();
+        assertThat(repo.claimReadyTask(List.of("reap-timeout"), afterDeadline.plusSeconds(7)))
+                .isPresent();
+    }
+
+    @Test
     void reapExpired_liveLease_leavesTaskUntouched() {
         Instant now = clock.instant();
-        Running running = setupRunningTask("reap-live", null, now);
+        Running running = setupRunningTask("reap-live", null, null, now);
 
         reaper.reapExpired(now);
 

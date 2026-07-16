@@ -2,6 +2,7 @@ package com.workflowmanager.engine.application;
 
 import com.workflowmanager.engine.config.EngineProperties;
 import com.workflowmanager.engine.domain.EventType;
+import com.workflowmanager.engine.orchestrator.LeasePolicy;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import com.workflowmanager.engine.persistence.WorkflowRepository.ClaimedTask;
 import java.time.Clock;
@@ -22,11 +23,14 @@ public class TaskDispatchService {
 
     private final WorkflowRepository repo;
     private final EngineProperties properties;
+    private final LeasePolicy leasePolicy;
     private final Clock clock;
 
-    public TaskDispatchService(WorkflowRepository repo, EngineProperties properties, Clock clock) {
+    public TaskDispatchService(
+            WorkflowRepository repo, EngineProperties properties, LeasePolicy leasePolicy, Clock clock) {
         this.repo = repo;
         this.properties = properties;
+        this.leasePolicy = leasePolicy;
         this.clock = clock;
     }
 
@@ -39,7 +43,8 @@ public class TaskDispatchService {
         }
 
         ClaimedTask claimed = claimedOpt.get();
-        Instant leaseExpiresAt = now.plus(properties.leaseDuration());
+        Instant attemptDeadline = leasePolicy.attemptDeadline(now, claimed.timeoutSeconds());
+        Instant leaseExpiresAt = leasePolicy.cappedExpiry(now, properties.leaseDuration(), attemptDeadline);
         repo.markTaskRunning(claimed.taskId(), workerId, now, leaseExpiresAt);
         repo.markInstanceRunning(claimed.workflowInstanceId(), now);
         repo.insertEvent(claimed.workflowInstanceId(), claimed.taskId(), EventType.TASK_DISPATCHED, null);
@@ -60,6 +65,7 @@ public class TaskDispatchService {
                         claimed.type(),
                         claimed.input(),
                         attempt,
-                        leaseExpiresAt));
+                        leaseExpiresAt,
+                        attemptDeadline));
     }
 }

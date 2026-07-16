@@ -4,6 +4,7 @@ import com.workflowmanager.engine.config.EngineProperties;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Held;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.NotHeld;
+import com.workflowmanager.engine.orchestrator.LeasePolicy;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import com.workflowmanager.engine.persistence.WorkflowRepository.RunningTask;
 import java.time.Clock;
@@ -29,16 +30,19 @@ public class LeaseService {
 
     private final WorkflowRepository repo;
     private final CompletionPolicy policy;
+    private final LeasePolicy leasePolicy;
     private final EngineProperties properties;
     private final Clock clock;
 
     public LeaseService(
             WorkflowRepository repo,
             CompletionPolicy policy,
+            LeasePolicy leasePolicy,
             EngineProperties properties,
             Clock clock) {
         this.repo = repo;
         this.policy = policy;
+        this.leasePolicy = leasePolicy;
         this.properties = properties;
         this.clock = clock;
     }
@@ -64,7 +68,14 @@ public class LeaseService {
         try {
             return switch (check) {
                 case Held ignored -> {
-                    Instant newExpiry = now.plus(properties.leaseDuration());
+                    Instant attemptDeadline =
+                            leasePolicy.attemptDeadline(running.startedAt(), running.timeoutSeconds());
+                    if (leasePolicy.pastDeadline(attemptDeadline, now)) {
+                        log.warn("lease renewal denied worker={} reason=TIMED_OUT", workerId);
+                        yield new Lost("TIMED_OUT");
+                    }
+                    Instant newExpiry =
+                            leasePolicy.cappedExpiry(now, properties.leaseDuration(), attemptDeadline);
                     repo.renewLease(taskId, newExpiry);
                     log.debug("lease renewed worker={} expiresAt={}", workerId, newExpiry);
                     yield new Renewed(newExpiry);

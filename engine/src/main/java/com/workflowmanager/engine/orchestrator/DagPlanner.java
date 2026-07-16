@@ -20,7 +20,9 @@ public class DagPlanner {
             String type = node.hasNonNull("type") ? node.get("type").asText() : key;
             String input = node.hasNonNull("input") ? node.get("input").toString() : workflowInputJson;
             RetryPolicy retryPolicy = RetryPolicy.from(node.get("retryPolicy"));
-            tasks.add(new PlannedTask(key, type, input, retryPolicy));
+            Integer timeoutSeconds =
+                    node.hasNonNull("timeoutSeconds") ? node.get("timeoutSeconds").asInt() : null;
+            tasks.add(new PlannedTask(key, type, input, retryPolicy, timeoutSeconds));
         }
         return List.copyOf(tasks);
     }

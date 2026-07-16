@@ -48,7 +48,7 @@ class WorkflowRepositoryIT {
         String policyJson =
                 "{\"maxAttempts\":3,\"backoffStrategy\":\"exponential\","
                         + "\"initialDelaySeconds\":2,\"maxDelaySeconds\":60}";
-        repo.insertReadyTask(instanceId, "step1", "echo", "{\"msg\":\"hi\"}", 3, policyJson, now, now);
+        repo.insertReadyTask(instanceId, "step1", "echo", "{\"msg\":\"hi\"}", 3, policyJson, null, now, now);
 
         String storedPolicy =
                 db.select(TI_RETRY_POLICY)
@@ -98,7 +98,7 @@ class WorkflowRepositoryIT {
         Instant now = clock.instant();
         UUID defId = repo.upsertDefinition("mismatch", 1, "{\"tasks\":[{\"key\":\"a\"}]}");
         UUID instanceId = repo.insertInstance(defId, null, now);
-        repo.insertReadyTask(instanceId, "a", "special", null, 1, null, now, now);
+        repo.insertReadyTask(instanceId, "a", "special", null, 1, null, null, now, now);
 
         assertThat(repo.claimReadyTask(List.of("echo"), now)).isEmpty();
         assertThat(repo.claimReadyTask(List.of("special"), now)).isPresent();

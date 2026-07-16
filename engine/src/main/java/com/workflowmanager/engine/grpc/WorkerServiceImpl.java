@@ -145,7 +145,9 @@ public class WorkerServiceImpl extends WorkerServiceGrpc.WorkerServiceImplBase {
                         .setType(task.type() == null ? "" : task.type())
                         .setInput(task.inputJson() == null ? "" : task.inputJson())
                         .setAttempt(task.attempt())
-                        .setLeaseExpiresAt(task.leaseExpiresAt().toString());
+                        .setLeaseExpiresAt(task.leaseExpiresAt().toString())
+                        .setAttemptDeadline(
+                                task.attemptDeadline() == null ? "" : task.attemptDeadline().toString());
         return FetchTaskResponse.newBuilder().setTask(builder).build();
     }
 

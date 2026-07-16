@@ -25,8 +25,8 @@ import java.util.logging.Logger;
 /**
  * Connects a set of {@link TaskHandler}s to the engine over gRPC. The loop long-polls FetchTask,
  * runs the matching handler on its own virtual thread while heartbeating the lease, and reports
- * the outcome with CompleteTask. If the engine says the lease is lost, the handler is interrupted
- * and no completion is reported.
+ * the outcome with CompleteTask. If the engine says the lease is lost — or the task's attempt
+ * deadline passes — the handler is interrupted and no completion is reported.
  *
  * <p>Delivery is at-least-once: a handler may run more than once for the same task, so handlers
  * must be idempotent (see {@link TaskHandler}).
@@ -127,10 +127,19 @@ public final class WorkerRuntime implements AutoCloseable {
     /** @return true when the handler finished while the lease was still held. */
     private boolean heartbeatUntilDone(Task task, CountDownLatch done, Thread handlerThread) {
         Instant leaseExpiresAt = Instant.parse(task.getLeaseExpiresAt());
+        Instant attemptDeadline =
+                task.getAttemptDeadline().isEmpty() ? null : Instant.parse(task.getAttemptDeadline());
         HeartbeatRequest request =
                 HeartbeatRequest.newBuilder().setTaskId(task.getTaskId()).setWorkerId(workerId).build();
         try {
-            while (!done.await(heartbeatWaitMillis(leaseExpiresAt), TimeUnit.MILLISECONDS)) {
+            while (!done.await(
+                    heartbeatWaitMillis(leaseExpiresAt, attemptDeadline), TimeUnit.MILLISECONDS)) {
+                if (attemptDeadline != null && !Instant.now().isBefore(attemptDeadline)) {
+                    log.warning(
+                            () -> "attempt deadline passed for task " + task.getTaskId() + ", aborting");
+                    handlerThread.interrupt();
+                    return false;
+                }
                 try {
                     HeartbeatResponse response = stub.heartbeat(request);
                     if (response.hasLost()) {
@@ -161,9 +170,14 @@ public final class WorkerRuntime implements AutoCloseable {
         }
     }
 
-    private static long heartbeatWaitMillis(Instant leaseExpiresAt) {
+    private static long heartbeatWaitMillis(Instant leaseExpiresAt, Instant attemptDeadline) {
         long third = Duration.between(Instant.now(), leaseExpiresAt).toMillis() / 3;
-        return Math.max(third, MIN_HEARTBEAT_WAIT.toMillis());
+        long wait = Math.max(third, MIN_HEARTBEAT_WAIT.toMillis());
+        if (attemptDeadline != null) {
+            long toDeadline = Duration.between(Instant.now(), attemptDeadline).toMillis();
+            wait = Math.min(wait, Math.max(toDeadline, 0));
+        }
+        return wait;
     }
 
     private void report(Task task, boolean success, String output, String error) {

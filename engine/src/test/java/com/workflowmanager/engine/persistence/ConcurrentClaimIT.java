@@ -42,7 +42,7 @@ class ConcurrentClaimIT {
         Instant now = clock.instant();
         UUID defId = repo.upsertDefinition("race", 1, "{\"tasks\":[{\"key\":\"step1\"}]}");
         UUID instanceId = repo.insertInstance(defId, null, now);
-        repo.insertReadyTask(instanceId, "step1", "race", null, 3, null, now, now);
+        repo.insertReadyTask(instanceId, "step1", "race", null, 3, null, null, now, now);
 
         TransactionTemplate tx = new TransactionTemplate(txManager);
         CountDownLatch bothTried = new CountDownLatch(2);
