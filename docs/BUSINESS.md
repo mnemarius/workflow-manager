@@ -38,7 +38,7 @@ That is the bar. If a change does not move the project toward this bar (or one o
 
 Each milestone is independently shippable and demoable. Do not skip ahead.
 
-**Current status: M1 complete.** M0 (foundation) and M1 (single-task submit + execute) have shipped; **M2 — retries, timeouts, leases, DLQ** is next.
+**Current status: M2 complete.** M0 (foundation), M1 (single-task submit + execute) and M2 (retries, timeouts, leases, DLQ — kill a worker mid-task, another picks it up) have shipped; **M3 — DAG support (multi-step workflows with dependencies)** is next.
 
 | #  | Milestone                                                       | Demo proves…                                                 | Est. effort |
 |----|-----------------------------------------------------------------|--------------------------------------------------------------|-------------|

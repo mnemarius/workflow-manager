@@ -7,9 +7,10 @@ their steps, hands work to worker processes over gRPC, tracks state in PostgreSQ
 failures, and exposes a dashboard to observe and control runs. No Kafka, no Redis, no
 Kubernetes — Postgres is the only substrate.
 
-> Status: **M1 — single-task submit + execute.** Submit a one-task workflow over REST; a Java
-> worker fetches it over gRPC, runs it, and the run reaches `SUCCEEDED`. Retries, DAGs, timers
-> and the live dashboard arrive in later milestones (see [docs/BUSINESS.md](docs/BUSINESS.md)).
+> Status: **M2 — retries, timeouts, leases, DLQ.** Kill a worker mid-task and another picks it
+> up: task leases with heartbeats, a reaper that recovers expired leases, retries with backoff,
+> per-attempt timeouts, and a dead-letter queue with redrive. DAGs, timers and the live
+> dashboard arrive in later milestones (see [docs/BUSINESS.md](docs/BUSINESS.md)).
 
 ## Topology
 
@@ -61,8 +62,9 @@ docker compose up --build
 - Dashboard: <http://localhost:5173>
 - Postgres: `localhost:5432` (`workflow` / `workflow`)
 
-The `worker` service runs the sample echo handler and long-polls the engine over gRPC. Flyway
-applies the schema on engine startup. Tear down with `docker compose down -v`.
+The `worker` service runs the sample worker (`echo` and `sleep` handlers) and long-polls the
+engine over gRPC; scale it with `--scale worker=N` — each container's hostname becomes its
+worker id. Flyway applies the schema on engine startup. Tear down with `docker compose down -v`.
 
 Submit a single-task workflow and watch it succeed:
 
@@ -72,6 +74,55 @@ curl -s localhost:8080/workflows -H 'content-type: application/json' -d '{
   "dag": { "tasks": [ { "key": "step1", "type": "echo", "input": { "msg": "hi" } } ] }
 }'
 # -> {"instanceId":"..."}; then GET /workflows/{instanceId} until "status":"SUCCEEDED"
+```
+
+## M2 demo: kill a worker mid-task
+
+The M2 promise: kill a worker mid-task and another picks it up. Bring the stack up with two
+workers and short lease knobs so recovery is quick to watch:
+
+```bash
+ENGINE_LEASE_DURATION=10s ENGINE_REAPER_INTERVAL=2s \
+  docker compose up -d --build --scale worker=2
+```
+
+Submit a workflow whose single task sleeps for 60 seconds:
+
+```bash
+curl -s localhost:8080/workflows -H 'content-type: application/json' -d '{
+  "name": "failover-demo", "version": 1,
+  "dag": { "tasks": [ { "key": "nap", "type": "sleep", "input": { "seconds": 60 } } ] }
+}'
+# -> {"instanceId":"..."}
+```
+
+Find the worker holding the task's lease and kill it — the worker id defaults to the
+container hostname, so it doubles as a container id:
+
+```bash
+docker compose exec postgres psql -U workflow -d workflow -tAc 'select worker_id from task_leases'
+docker kill <worker-id-from-above>
+```
+
+The dead worker stops heartbeating, its lease expires, the reaper reschedules the task, and
+the surviving worker claims attempt 2 (the killed container itself comes back via
+`restart: unless-stopped`). Watch it recover:
+
+```bash
+curl -s localhost:8080/workflows/<instanceId>
+# -> "status":"SUCCEEDED" with the task at "attempts":2
+
+docker compose exec postgres psql -U workflow -d workflow -c 'select type from events order by created_at'
+# -> WORKFLOW_SUBMITTED, TASK_DISPATCHED, TASK_LEASE_EXPIRED, TASK_DISPATCHED,
+#    TASK_SUCCEEDED, WORKFLOW_SUCCEEDED
+```
+
+The automated version is [scripts/chaos.sh](scripts/chaos.sh): a submit loop feeds sleep
+workflows while a random worker is killed every ~10s; at the end every workflow must have
+`SUCCEEDED` with an empty dead-letter queue, and the script prints PASS or FAIL:
+
+```bash
+scripts/chaos.sh 60
 ```
 
 ## Build & test

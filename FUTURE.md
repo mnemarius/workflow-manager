@@ -28,7 +28,14 @@ scope rules). Nothing here is a commitment.
   *their own* throwaway local DB; the maintainer's data is never shared or reachable. Keep secrets
   in a git-ignored `.env`; commit only `.env.example` with placeholder values.
 
-## Beyond v1 (see milestones M2+)
+## Deferred from M2
+
+- **DLQ archival / retention.** The DLQ is the set of `FAILED` rows in `task_instances`
+  (ADR 0009); a partial index keeps the listing cheap, but there is no retention story. If
+  `FAILED` rows ever number millions, add archival (move old rows out, don't copy them) as
+  the pressure valve — plus bulk redrive if operators end up redriving one task at a time.
+
+## Beyond v1 (see milestones M3+)
 
 - **Streaming lease heartbeat.** The heartbeat is a unary RPC because a worker runs one task
   at a time (ADR 0007). If workers ever run many concurrent tasks, a single bidirectional
