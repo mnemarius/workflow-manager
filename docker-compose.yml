@@ -1,4 +1,7 @@
-# Local dev stack (M1): Postgres + engine + worker + dashboard in one command.
+# Local dev stack (M2): Postgres + engine + worker(s) + dashboard in one command.
+# Scale workers with `docker compose up --scale worker=2` — each container's hostname
+# becomes its worker id. Lease knobs (for failover demos): ENGINE_LEASE_DURATION,
+# ENGINE_REAPER_INTERVAL.
 services:
   postgres:
     image: postgres:16-alpine
@@ -24,6 +27,8 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/workflow
       SPRING_DATASOURCE_USERNAME: workflow
       SPRING_DATASOURCE_PASSWORD: workflow
+      ENGINE_LEASE_DURATION: ${ENGINE_LEASE_DURATION:-30s}
+      ENGINE_REAPER_INTERVAL: ${ENGINE_REAPER_INTERVAL:-5s}
     ports:
       - "8080:8080"   # REST + actuator
       - "9090:9090"   # gRPC (worker protocol)
@@ -41,6 +46,7 @@ services:
     build:
       context: .
       dockerfile: worker-sdk/Dockerfile
+    restart: unless-stopped
     environment:
       ENGINE_GRPC_TARGET: engine:9090
     depends_on:

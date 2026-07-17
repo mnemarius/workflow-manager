@@ -187,7 +187,7 @@ The orchestrator's per-workflow logic is **single-threaded**. Parallelism comes 
 
 - **Unit tests** for the orchestrator state machine — no DB, pure logic. Most bugs live here; test ruthlessly.
 - **Integration tests** with Testcontainers (real Postgres). Cover lease expiry recovery, retry backoff, DAG resolution, crash recovery.
-- **Chaos test** (manual is fine): a script that kills a random worker every 10 s while a workflow runs. The workflow must still complete.
+- **Chaos test:** [scripts/chaos.sh](../scripts/chaos.sh) kills a random worker container every ~10 s while a submit loop feeds sleep-task workflows (compose `restart: unless-stopped` brings workers back). Every workflow must still reach `SUCCEEDED` with an empty DLQ.
 
 ### Observability (build in from M0, do not bolt on)
 
@@ -203,7 +203,7 @@ The orchestrator's per-workflow logic is **single-threaded**. Parallelism comes 
 
 ### Deployment
 
-- **Local:** `docker compose up` brings up engine + Postgres + sample worker + dashboard.
+- **Local:** `docker compose up` brings up engine + Postgres + sample worker + dashboard. Workers scale horizontally (`--scale worker=N`; each container's hostname is its worker id) and restart on crash (`unless-stopped`).
 - **Cloud (optional, stretch):** Fly.io or Railway — cheap, free Postgres, looks impressive in a README.
 
 ### Documentation

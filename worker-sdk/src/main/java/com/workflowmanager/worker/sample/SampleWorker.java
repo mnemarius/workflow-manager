@@ -21,7 +21,9 @@ public final class SampleWorker {
 
     public static void main(String[] args) throws InterruptedException {
         String target = env("ENGINE_GRPC_TARGET", "localhost:9090");
-        String workerId = env("WORKER_ID", "sample-worker-" + UUID.randomUUID());
+        // HOSTNAME is the container hostname, so `docker compose up --scale worker=N`
+        // yields N distinct worker ids without any per-container config.
+        String workerId = env("WORKER_ID", env("HOSTNAME", "sample-worker-" + UUID.randomUUID()));
 
         TaskHandler echo =
                 input -> {
