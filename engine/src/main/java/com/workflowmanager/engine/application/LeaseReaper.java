@@ -2,6 +2,7 @@ package com.workflowmanager.engine.application;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.workflowmanager.engine.domain.EventType;
+import com.workflowmanager.engine.domain.FailureReason;
 import com.workflowmanager.engine.orchestrator.LeasePolicy;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import com.workflowmanager.engine.persistence.WorkflowRepository.ExpiredLeaseTask;
@@ -67,6 +68,7 @@ public class LeaseReaper {
                         task.taskId(),
                         task.attempts(),
                         task.retryPolicyJson(),
+                        timedOut ? FailureReason.TIMED_OUT : FailureReason.LEASE_EXPIRED,
                         (timedOut ? "attempt timed out (worker " : "lease expired (worker ")
                                 + task.workerId()
                                 + ")",

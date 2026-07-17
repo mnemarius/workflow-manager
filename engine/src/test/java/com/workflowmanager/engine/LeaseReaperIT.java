@@ -92,7 +92,15 @@ class LeaseReaperIT {
         assertThat(repo.findInstance(running.instanceId()).orElseThrow().status())
                 .isEqualTo(WorkflowStatus.FAILED);
         assertThat(eventTypes(running.instanceId()))
-                .contains("TASK_LEASE_EXPIRED", "TASK_FAILED", "WORKFLOW_FAILED");
+                .contains("TASK_LEASE_EXPIRED", "TASK_FAILED", "WORKFLOW_FAILED", "TASK_DEAD_LETTERED");
+
+        var deadLetter =
+                repo.findDeadLetters(50).stream()
+                        .filter(d -> d.taskId().equals(running.taskId()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(deadLetter.failureReason()).isEqualTo("LEASE_EXPIRED");
+        assertThat(deadLetter.lastError()).contains("lease expired");
     }
 
     @Test

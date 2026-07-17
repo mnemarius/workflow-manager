@@ -3,6 +3,7 @@ package com.workflowmanager.engine.application;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.workflowmanager.engine.domain.EventType;
+import com.workflowmanager.engine.domain.FailureReason;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Exhausted;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.InstanceOutcome;
@@ -40,15 +41,17 @@ public class TaskFailureResolver {
             UUID taskId,
             int attempts,
             String retryPolicyJson,
+            FailureReason reason,
             String errorMessage,
             Instant now,
             boolean withBackoff) {
         RetryPolicy retryPolicy = parsePolicy(retryPolicyJson);
+        String lastError = lastErrorData(errorMessage, attempts);
         TaskResolution resolution =
                 switch (policy.resolveFailure(attempts, retryPolicy, now)) {
                     case Retry retry -> {
                         Instant nextRunAt = withBackoff ? retry.nextRunAt() : now;
-                        repo.scheduleRetry(taskId, nextRunAt, now);
+                        repo.scheduleRetry(taskId, nextRunAt, lastError, now);
                         repo.insertEvent(
                                 instanceId,
                                 taskId,
@@ -62,8 +65,14 @@ public class TaskFailureResolver {
                         yield TaskResolution.RETRY_SCHEDULED;
                     }
                     case Exhausted ignored -> {
-                        repo.completeTaskFailure(taskId, now);
+                        repo.completeTaskFailure(taskId, reason, lastError, now);
                         repo.insertEvent(instanceId, taskId, EventType.TASK_FAILED, errorData(errorMessage));
+                        repo.insertEvent(
+                                instanceId,
+                                taskId,
+                                EventType.TASK_DEAD_LETTERED,
+                                deadLetterData(reason, attempts));
+                        log.warn("task dead-lettered reason={} attempts={}", reason, attempts);
                         yield TaskResolution.DEAD_LETTERED;
                     }
                 };
@@ -95,5 +104,16 @@ public class TaskFailureResolver {
 
     private String errorData(String errorMessage) {
         return errorMessage == null ? null : mapper.createObjectNode().put("error", errorMessage).toString();
+    }
+
+    private String lastErrorData(String errorMessage, int attempts) {
+        return mapper.createObjectNode().put("error", errorMessage).put("attempt", attempts).toString();
+    }
+
+    private String deadLetterData(FailureReason reason, int attempts) {
+        return mapper.createObjectNode()
+                .put("reason", reason.name())
+                .put("attempts", attempts)
+                .toString();
     }
 }

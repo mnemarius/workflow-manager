@@ -53,6 +53,9 @@ final class Schema {
     static final Field<Integer> TI_TIMEOUT_SECONDS =
             field(name("timeout_seconds"), SQLDataType.INTEGER);
     static final Field<JSONB> TI_RETRY_POLICY = field(name("retry_policy"), SQLDataType.JSONB);
+    static final Field<String> TI_FAILURE_REASON =
+            field(name("failure_reason"), SQLDataType.VARCHAR);
+    static final Field<JSONB> TI_LAST_ERROR = field(name("last_error"), SQLDataType.JSONB);
     static final Field<JSONB> TI_INPUT = field(name("input"), SQLDataType.JSONB);
     static final Field<JSONB> TI_OUTPUT = field(name("output"), SQLDataType.JSONB);
     static final Field<Instant> TI_SCHEDULED_AT = field(name("scheduled_at"), SQLDataType.INSTANT);

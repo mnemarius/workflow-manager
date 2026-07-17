@@ -1,6 +1,7 @@
 package com.workflowmanager.engine.application;
 
 import com.workflowmanager.engine.domain.EventType;
+import com.workflowmanager.engine.domain.FailureReason;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Rejected;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
@@ -73,6 +74,7 @@ public class TaskCompletionService {
                         taskId,
                         running.attempts(),
                         running.retryPolicyJson(),
+                        FailureReason.HANDLER_FAILED,
                         errorMessage,
                         now,
                         true);

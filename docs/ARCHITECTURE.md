@@ -98,7 +98,7 @@ Six tables. Get these right and the rest follows.
 |------------------------|------------------------------------------------------------------------------------------------------|
 | `workflow_definitions` | Versioned DAG templates. `(id, name, version, dag JSONB, created_at)`.                               |
 | `workflow_instances`   | One row per submitted workflow run. `(id, definition_id, status, input JSONB, output JSONB, …)`.     |
-| `task_instances`       | One row per step in a workflow run. Status, attempts, per-attempt timeout, scheduled/started/finished timestamps. |
+| `task_instances`       | One row per step in a workflow run. Status, attempts, per-attempt timeout, failure metadata (`failure_reason`, `last_error`), scheduled/started/finished timestamps. |
 | `task_leases`          | Currently-held tasks. `(task_id, worker_id, lease_expires_at)` — drives crashed-worker recovery.     |
 | `events`               | Append-only log of every state transition. Audit trail, debug log, replay source.                    |
 | `outbox`               | Pending side effects (task enqueue, external notifications). Drained transactionally.                |
@@ -111,7 +111,7 @@ Six tables. Get these right and the rest follows.
 | `READY`           | All dependencies satisfied. Eligible to be leased by a worker on the next poll.                      |
 | `RUNNING`         | Currently leased by a worker. A `task_leases` row exists with a `lease_expires_at` in the future.    |
 | `SUCCEEDED`       | Worker reported success. Terminal. Triggers downstream `PENDING → READY` promotion.                  |
-| `FAILED`          | Worker reported failure and retry budget is exhausted, or task was pushed to DLQ. Terminal.          |
+| `FAILED`          | Retry budget exhausted. Terminal — and the dead-letter queue itself: `FAILED` rows carry failure metadata, are listed by `GET /dead-letters`, and can be redriven back to `READY` (ADR 0009). |
 | `RETRY_SCHEDULED` | Worker failed; retry scheduled. Claimable when due: `RETRY_SCHEDULED → RUNNING` on claim (ADR 0006). |
 | `CANCELLED`       | Externally cancelled (via API or because the parent workflow was cancelled). Terminal.               |
 

@@ -2,7 +2,7 @@
 
 > **Keep in sync:** these diagrams describe the system as built. Whenever you change the architecture, modules, runtime flow, or deployment topology, update the affected view in the same change — do not let them drift.
 
-Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat, crashed-worker recovery, per-attempt timeouts).
+Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat, crashed-worker recovery, per-attempt timeouts, dead-lettering + redrive).
 
 ## Submit → execute happy path
 
@@ -67,11 +67,13 @@ sequenceDiagram
         GRPC->>DB: claim due READY or RETRY_SCHEDULED task -> RUNNING, attempts+1
         GRPC-->>Worker: Task (next attempt)
     else retry budget exhausted
-        GRPC->>DB: task -> FAILED; instance -> FAILED
-        GRPC->>DB: append TASK_FAILED + WORKFLOW_FAILED events
+        GRPC->>DB: task -> FAILED with failure_reason + last_error; instance -> FAILED
+        GRPC->>DB: append TASK_FAILED + TASK_DEAD_LETTERED + WORKFLOW_FAILED events
         GRPC-->>Worker: ack
     end
 ```
+
+A dead-lettered task stays queryable and recoverable: `GET /dead-letters` lists `FAILED` rows with their failure metadata, and `POST /dead-letters/{taskId}/retry` resets the task to `READY` (attempts 0, metadata cleared), reopens the workflow, and appends `TASK_REDRIVEN` — the normal claim path re-executes it (ADR 0009).
 
 ## Worker crash → reap → re-dispatch
 
@@ -137,7 +139,7 @@ sequenceDiagram
 
 ## Task status lifecycle
 
-`PENDING → READY → RUNNING → SUCCEEDED` is the happy path. M2 adds the failure loop `RUNNING → RETRY_SCHEDULED → RUNNING` and the terminal `FAILED` when the retry budget runs out.
+`PENDING → READY → RUNNING → SUCCEEDED` is the happy path. M2 adds the failure loop `RUNNING → RETRY_SCHEDULED → RUNNING`, the terminal `FAILED` when the retry budget runs out, and redrive as the one sanctioned `FAILED → READY` transition (ADR 0009).
 
 | Status            | When it appears                                                                          |
 |-------------------|------------------------------------------------------------------------------------------|
@@ -145,6 +147,6 @@ sequenceDiagram
 | `READY`           | Eligible to be leased by a worker on the next `FetchTask` poll.                          |
 | `RUNNING`         | Leased by a worker; a `task_leases` row holds the lease.                                 |
 | `SUCCEEDED`       | Worker reported success. Terminal.                                                       |
-| `FAILED`          | Worker reported failure and retries are exhausted. Terminal.                             |
+| `FAILED`          | Retries exhausted — the dead-letter queue; redrive resets it to `READY` (ADR 0009).      |
 | `RETRY_SCHEDULED` | Retry pending — worker failure or timeout (backoff), lease expiry (no backoff); ADRs 0006–0008. |
 | `CANCELLED`       | Externally cancelled. **Arrives with M6.**                                               |
