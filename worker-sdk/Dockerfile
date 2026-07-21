@@ -27,5 +27,8 @@ FROM eclipse-temurin:21-jre-alpine AS run
 WORKDIR /app
 RUN addgroup -S app && adduser -S -G app app
 COPY --from=build /workspace/worker-sdk/build/install/worker-sdk /app
+# Dependency jars arrive with the Gradle cache's 0600 root-only perms; open them up
+# so the non-root user can actually load them.
+RUN chmod -R a+rX /app
 USER app
 ENTRYPOINT ["/app/bin/worker-sdk"]

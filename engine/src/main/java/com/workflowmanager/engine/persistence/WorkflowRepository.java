@@ -3,6 +3,7 @@ package com.workflowmanager.engine.persistence;
 import static com.workflowmanager.engine.persistence.Schema.*;
 
 import com.workflowmanager.engine.domain.EventType;
+import com.workflowmanager.engine.domain.FailureReason;
 import com.workflowmanager.engine.domain.TaskStatus;
 import com.workflowmanager.engine.domain.WorkflowStatus;
 import java.time.Instant;
@@ -22,19 +23,52 @@ import org.springframework.stereotype.Repository;
 public class WorkflowRepository {
 
     public record ClaimedTask(
-            UUID taskId, String taskKey, String type, String input, int attempts, UUID workflowInstanceId) {}
+            UUID taskId,
+            String taskKey,
+            String type,
+            String input,
+            int attempts,
+            UUID workflowInstanceId,
+            Integer timeoutSeconds) {}
 
     public record RunningTask(
             UUID taskId,
             UUID workflowInstanceId,
             TaskStatus status,
             String leaseWorkerId,
-            Instant leaseExpiresAt) {}
+            Instant leaseExpiresAt,
+            int attempts,
+            int maxAttempts,
+            String retryPolicyJson,
+            Instant startedAt,
+            Integer timeoutSeconds) {}
+
+    public record ExpiredLeaseTask(
+            UUID taskId,
+            UUID workflowInstanceId,
+            String workerId,
+            int attempts,
+            int maxAttempts,
+            String retryPolicyJson,
+            Instant startedAt,
+            Integer timeoutSeconds) {}
 
     public record InstanceRow(
             UUID id, WorkflowStatus status, String output, Instant startedAt, Instant finishedAt) {}
 
     public record TaskRow(String taskKey, String type, TaskStatus status, int attempts, String output) {}
+
+    public record DeadLetterRow(
+            UUID taskId,
+            UUID workflowInstanceId,
+            String taskKey,
+            String type,
+            int attempts,
+            String failureReason,
+            String lastError,
+            Instant finishedAt) {}
+
+    public record RedriveCandidate(UUID workflowInstanceId, TaskStatus status) {}
 
     private final DSLContext db;
 
@@ -72,6 +106,8 @@ public class WorkflowRepository {
             String type,
             String inputJson,
             int maxAttempts,
+            String retryPolicyJson,
+            Integer timeoutSeconds,
             Instant scheduledAt,
             Instant now) {
         db.insertInto(TASK_INSTANCES)
@@ -80,19 +116,33 @@ public class WorkflowRepository {
                 .set(TI_TYPE, type)
                 .set(TI_STATUS, TaskStatus.READY.name())
                 .set(TI_MAX_ATTEMPTS, maxAttempts)
+                .set(TI_TIMEOUT_SECONDS, timeoutSeconds)
+                .set(TI_RETRY_POLICY, jsonbOrNull(retryPolicyJson))
                 .set(TI_INPUT, jsonbOrNull(inputJson))
                 .set(TI_SCHEDULED_AT, scheduledAt)
                 .set(TI_UPDATED_AT, now)
                 .execute();
     }
 
-    /** Claims one due, READY task the worker can run. FOR UPDATE SKIP LOCKED (ADR 0001). */
+    /**
+     * Claims one due task the worker can run: READY, or RETRY_SCHEDULED whose backoff has elapsed
+     * (ADR 0006 — no promotion sweeper). FOR UPDATE SKIP LOCKED (ADR 0001).
+     */
     public Optional<ClaimedTask> claimReadyTask(List<String> capabilities, Instant now) {
-        var condition = TI_STATUS.eq(TaskStatus.READY.name()).and(TI_SCHEDULED_AT.le(now));
+        var condition =
+                TI_STATUS.in(TaskStatus.READY.name(), TaskStatus.RETRY_SCHEDULED.name())
+                        .and(TI_SCHEDULED_AT.le(now));
         if (!capabilities.isEmpty()) {
             condition = condition.and(TI_TYPE.in(capabilities));
         }
-        return db.select(TI_ID, TI_TASK_KEY, TI_TYPE, TI_INPUT, TI_ATTEMPTS, TI_WORKFLOW_INSTANCE_ID)
+        return db.select(
+                        TI_ID,
+                        TI_TASK_KEY,
+                        TI_TYPE,
+                        TI_INPUT,
+                        TI_ATTEMPTS,
+                        TI_WORKFLOW_INSTANCE_ID,
+                        TI_TIMEOUT_SECONDS)
                 .from(TASK_INSTANCES)
                 .where(condition)
                 .orderBy(TI_SCHEDULED_AT.asc())
@@ -107,7 +157,8 @@ public class WorkflowRepository {
                                         r.get(TI_TYPE),
                                         dataOrNull(r.get(TI_INPUT)),
                                         r.get(TI_ATTEMPTS),
-                                        r.get(TI_WORKFLOW_INSTANCE_ID)));
+                                        r.get(TI_WORKFLOW_INSTANCE_ID),
+                                        r.get(TI_TIMEOUT_SECONDS)));
     }
 
     public void markTaskRunning(UUID taskId, String workerId, Instant now, Instant leaseExpiresAt) {
@@ -136,7 +187,16 @@ public class WorkflowRepository {
     }
 
     public Optional<RunningTask> loadRunningTask(UUID taskId) {
-        return db.select(TI_WORKFLOW_INSTANCE_ID, TI_STATUS, TL_WORKER_ID, TL_LEASE_EXPIRES_AT)
+        return db.select(
+                        TI_WORKFLOW_INSTANCE_ID,
+                        TI_STATUS,
+                        TL_WORKER_ID,
+                        TL_LEASE_EXPIRES_AT,
+                        TI_ATTEMPTS,
+                        TI_MAX_ATTEMPTS,
+                        TI_RETRY_POLICY,
+                        TI_STARTED_AT,
+                        TI_TIMEOUT_SECONDS)
                 .from(TASK_INSTANCES)
                 .leftJoin(TASK_LEASES)
                 .on(TL_TASK_ID.eq(TI_ID))
@@ -148,7 +208,54 @@ public class WorkflowRepository {
                                         r.get(TI_WORKFLOW_INSTANCE_ID),
                                         TaskStatus.valueOf(r.get(TI_STATUS)),
                                         r.get(TL_WORKER_ID),
-                                        r.get(TL_LEASE_EXPIRES_AT)));
+                                        r.get(TL_LEASE_EXPIRES_AT),
+                                        r.get(TI_ATTEMPTS),
+                                        r.get(TI_MAX_ATTEMPTS),
+                                        dataOrNull(r.get(TI_RETRY_POLICY)),
+                                        r.get(TI_STARTED_AT),
+                                        r.get(TI_TIMEOUT_SECONDS)));
+    }
+
+    /**
+     * Locks RUNNING tasks whose lease has expired (ADR 0008). SKIP LOCKED keeps a concurrent
+     * reaper (multi-engine, M7) or an in-flight completion from double-processing a task.
+     */
+    public List<ExpiredLeaseTask> claimExpiredRunningTasks(Instant now) {
+        return db.select(
+                        TI_ID,
+                        TI_WORKFLOW_INSTANCE_ID,
+                        TL_WORKER_ID,
+                        TI_ATTEMPTS,
+                        TI_MAX_ATTEMPTS,
+                        TI_RETRY_POLICY,
+                        TI_STARTED_AT,
+                        TI_TIMEOUT_SECONDS)
+                .from(TASK_INSTANCES)
+                .join(TASK_LEASES)
+                .on(TL_TASK_ID.eq(TI_ID))
+                .where(TI_STATUS.eq(TaskStatus.RUNNING.name()))
+                .and(TL_LEASE_EXPIRES_AT.le(now))
+                .forUpdate()
+                .of(TASK_INSTANCES)
+                .skipLocked()
+                .fetch(
+                        r ->
+                                new ExpiredLeaseTask(
+                                        r.get(TI_ID),
+                                        r.get(TI_WORKFLOW_INSTANCE_ID),
+                                        r.get(TL_WORKER_ID),
+                                        r.get(TI_ATTEMPTS),
+                                        r.get(TI_MAX_ATTEMPTS),
+                                        dataOrNull(r.get(TI_RETRY_POLICY)),
+                                        r.get(TI_STARTED_AT),
+                                        r.get(TI_TIMEOUT_SECONDS)));
+    }
+
+    public void renewLease(UUID taskId, Instant newExpiry) {
+        db.update(TASK_LEASES)
+                .set(TL_LEASE_EXPIRES_AT, newExpiry)
+                .where(TL_TASK_ID.eq(taskId))
+                .execute();
     }
 
     public void completeTaskSuccess(UUID taskId, String outputJson, Instant now) {
@@ -162,14 +269,90 @@ public class WorkflowRepository {
         releaseLease(taskId);
     }
 
-    public void completeTaskFailure(UUID taskId, Instant now) {
+    public void scheduleRetry(UUID taskId, Instant nextRunAt, String lastErrorJson, Instant now) {
+        db.update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.RETRY_SCHEDULED.name())
+                .set(TI_SCHEDULED_AT, nextRunAt)
+                .set(TI_LAST_ERROR, jsonbOrNull(lastErrorJson))
+                .set(TI_UPDATED_AT, now)
+                .where(TI_ID.eq(taskId))
+                .execute();
+        releaseLease(taskId);
+    }
+
+    public void completeTaskFailure(
+            UUID taskId, FailureReason reason, String lastErrorJson, Instant now) {
         db.update(TASK_INSTANCES)
                 .set(TI_STATUS, TaskStatus.FAILED.name())
+                .set(TI_FAILURE_REASON, reason.name())
+                .set(TI_LAST_ERROR, jsonbOrNull(lastErrorJson))
                 .set(TI_FINISHED_AT, now)
                 .set(TI_UPDATED_AT, now)
                 .where(TI_ID.eq(taskId))
                 .execute();
         releaseLease(taskId);
+    }
+
+    public List<DeadLetterRow> findDeadLetters(int limit) {
+        return db.select(
+                        TI_ID,
+                        TI_WORKFLOW_INSTANCE_ID,
+                        TI_TASK_KEY,
+                        TI_TYPE,
+                        TI_ATTEMPTS,
+                        TI_FAILURE_REASON,
+                        TI_LAST_ERROR,
+                        TI_FINISHED_AT)
+                .from(TASK_INSTANCES)
+                .where(TI_STATUS.eq(TaskStatus.FAILED.name()))
+                .orderBy(TI_FINISHED_AT.desc())
+                .limit(limit)
+                .fetch(
+                        r ->
+                                new DeadLetterRow(
+                                        r.get(TI_ID),
+                                        r.get(TI_WORKFLOW_INSTANCE_ID),
+                                        r.get(TI_TASK_KEY),
+                                        r.get(TI_TYPE),
+                                        r.get(TI_ATTEMPTS),
+                                        r.get(TI_FAILURE_REASON),
+                                        dataOrNull(r.get(TI_LAST_ERROR)),
+                                        r.get(TI_FINISHED_AT)));
+    }
+
+    public Optional<RedriveCandidate> lockTaskForRedrive(UUID taskId) {
+        return db.select(TI_WORKFLOW_INSTANCE_ID, TI_STATUS)
+                .from(TASK_INSTANCES)
+                .where(TI_ID.eq(taskId))
+                .forUpdate()
+                .fetchOptional(
+                        r ->
+                                new RedriveCandidate(
+                                        r.get(TI_WORKFLOW_INSTANCE_ID),
+                                        TaskStatus.valueOf(r.get(TI_STATUS))));
+    }
+
+    public void redriveTask(UUID taskId, Instant now) {
+        db.update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.READY.name())
+                .set(TI_ATTEMPTS, 0)
+                .set(TI_SCHEDULED_AT, now)
+                .set(TI_FAILURE_REASON, (String) null)
+                .set(TI_LAST_ERROR, (JSONB) null)
+                .set(TI_FINISHED_AT, (Instant) null)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_ID.eq(taskId))
+                .execute();
+    }
+
+    public void reopenFailedInstance(UUID instanceId, Instant now) {
+        db.update(WORKFLOW_INSTANCES)
+                .set(WI_STATUS, WorkflowStatus.RUNNING.name())
+                .set(WI_FINISHED_AT, (Instant) null)
+                .set(WI_UPDATED_AT, now)
+                .where(WI_ID.eq(instanceId))
+                .and(WI_STATUS.eq(WorkflowStatus.FAILED.name()))
+                .execute();
     }
 
     public long countOpenTasks(UUID instanceId) {
@@ -241,7 +424,7 @@ public class WorkflowRepository {
                                         dataOrNull(r.get(TI_OUTPUT))));
     }
 
-    private void releaseLease(UUID taskId) {
+    public void releaseLease(UUID taskId) {
         db.deleteFrom(TASK_LEASES).where(TL_TASK_ID.eq(taskId)).execute();
     }
 

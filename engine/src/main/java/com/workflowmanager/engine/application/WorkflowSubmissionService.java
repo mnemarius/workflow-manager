@@ -41,7 +41,15 @@ public class WorkflowSubmissionService {
         try {
             for (PlannedTask task : planner.plan(dag, inputJson)) {
                 repo.insertReadyTask(
-                        instanceId, task.key(), task.type(), task.inputJson(), task.maxAttempts(), now, now);
+                        instanceId,
+                        task.key(),
+                        task.type(),
+                        task.inputJson(),
+                        task.retryPolicy().maxAttempts(),
+                        task.retryPolicy().toJson(),
+                        task.timeoutSeconds(),
+                        now,
+                        now);
             }
             repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUBMITTED, null);
             log.info("workflow submitted name={} version={}", name, version);

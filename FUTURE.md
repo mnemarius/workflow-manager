@@ -16,10 +16,45 @@ scope rules). Nothing here is a commitment.
   call is parked. Have the submit/promotion transaction `NOTIFY` so parked long-polls wake
   immediately instead of polling.
 
-## Beyond v1 (see milestones M2+)
+## Contributor onboarding (local development)
 
-- Lease heartbeat / renewal RPC and expired-lease recovery (M2).
-- Retry backoff strategies and a dead-letter queue (M2).
+- **Clone-and-run local dev setup.** Later, a fresh contributor should be able to clone the repo,
+  stand up **their own local Postgres**, and start developing without any access to a shared or
+  personal database. Flyway migrations already define the schema, so onboarding is really about:
+  a `docker compose up` that provisions an empty local Postgres, a `.env.example` (never a real
+  `.env`) documenting the connection string, and a quickstart in the README.
+- **My own database stays private.** No real connection string, credentials, dump, or host for the
+  maintainer's database ever lands in the repo, docs, or compose files. Contributors run against
+  *their own* throwaway local DB; the maintainer's data is never shared or reachable. Keep secrets
+  in a git-ignored `.env`; commit only `.env.example` with placeholder values.
+
+## Deferred from M2
+
+- **DLQ archival / retention.** The DLQ is the set of `FAILED` rows in `task_instances`
+  (ADR 0009); a partial index keeps the listing cheap, but there is no retention story. If
+  `FAILED` rows ever number millions, add archival (move old rows out, don't copy them) as
+  the pressure valve — plus bulk redrive if operators end up redriving one task at a time.
+
+## Beyond v1 (see milestones M3+)
+
+- **Streaming lease heartbeat.** The heartbeat is a unary RPC because a worker runs one task
+  at a time (ADR 0007). If workers ever run many concurrent tasks, a single bidirectional
+  heartbeat stream per worker (batching renewals, pushing `LeaseLost` eagerly) would beat N
+  unary calls per interval.
+- **Transactional outbox drain on recovery.** Decision G item 3: no `outbox` producer exists
+  yet, so the reaper's startup pass has nothing to drain. When side effects start flowing
+  through the outbox, add the drain to the recovery pass.
 - Multi-step DAG dependencies and richer capability matching (M3).
 - API-key auth on the REST and gRPC surfaces (ARCHITECTURE §Security).
 - Trace-context propagation engine ↔ worker over gRPC metadata (M8).
+- **Database connection pooling tuning.** Spring Boot already ships HikariCP as the default pool
+  behind the `spring.datasource` config ([application.yml](engine/src/main/resources/application.yml)),
+  so the pool exists but runs on defaults. Look into sizing it deliberately — `maximum-pool-size`,
+  `minimum-idle`, connection/idle timeouts — against the engine's concurrency (long-poll dispatch,
+  gRPC workers) and Postgres' `max_connections`, and expose the Hikari pool metrics via
+  `/actuator/prometheus` so pool saturation is visible on the future Grafana dashboards.
+- **Grafana dashboards over Prometheus.** The engine already exposes
+  `/actuator/prometheus` ([application.yml](engine/src/main/resources/application.yml)). Add a
+  Grafana service to the compose stack, wire it to scrape Prometheus, and ship starter dashboards
+  (queue depth, task throughput, lease expiries, RPC latencies) so the metrics are actually
+  visualized rather than just scraped.

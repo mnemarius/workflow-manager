@@ -77,6 +77,19 @@ The repository contains three artifacts:
 
 ---
 
+## Non-functional requirements
+
+The project's guiding quality attributes:
+
+- **Scalability**
+- **Modifiability**
+- **Deployability**
+- **Availability**
+
+These are lenses, not a checklist. For every task, interpret what each attribute means in that task's context and let the relevant ones shape the solution.
+
+---
+
 ## Data model
 
 Six tables. Get these right and the rest follows.
@@ -85,7 +98,7 @@ Six tables. Get these right and the rest follows.
 |------------------------|------------------------------------------------------------------------------------------------------|
 | `workflow_definitions` | Versioned DAG templates. `(id, name, version, dag JSONB, created_at)`.                               |
 | `workflow_instances`   | One row per submitted workflow run. `(id, definition_id, status, input JSONB, output JSONB, …)`.     |
-| `task_instances`       | One row per step in a workflow run. Status, attempts, scheduled/started/finished timestamps.         |
+| `task_instances`       | One row per step in a workflow run. Status, attempts, per-attempt timeout, failure metadata (`failure_reason`, `last_error`), scheduled/started/finished timestamps. |
 | `task_leases`          | Currently-held tasks. `(task_id, worker_id, lease_expires_at)` — drives crashed-worker recovery.     |
 | `events`               | Append-only log of every state transition. Audit trail, debug log, replay source.                    |
 | `outbox`               | Pending side effects (task enqueue, external notifications). Drained transactionally.                |
@@ -98,8 +111,8 @@ Six tables. Get these right and the rest follows.
 | `READY`           | All dependencies satisfied. Eligible to be leased by a worker on the next poll.                      |
 | `RUNNING`         | Currently leased by a worker. A `task_leases` row exists with a `lease_expires_at` in the future.    |
 | `SUCCEEDED`       | Worker reported success. Terminal. Triggers downstream `PENDING → READY` promotion.                  |
-| `FAILED`          | Worker reported failure and retry budget is exhausted, or task was pushed to DLQ. Terminal.          |
-| `RETRY_SCHEDULED` | Worker failed; retry scheduled. `scheduled_at` set to next attempt; flips to `READY` when due.       |
+| `FAILED`          | Retry budget exhausted. Terminal — and the dead-letter queue itself: `FAILED` rows carry failure metadata, are listed by `GET /dead-letters`, and can be redriven back to `READY` (ADR 0009). |
+| `RETRY_SCHEDULED` | Worker failed; retry scheduled. Claimable when due: `RETRY_SCHEDULED → RUNNING` on claim (ADR 0006). |
 | `CANCELLED`       | Externally cancelled (via API or because the parent workflow was cancelled). Terminal.               |
 
 **Promotion is event-driven, not query-driven.** When a task transitions to `SUCCEEDED`, the orchestrator inspects its DAG children in the same transaction; any child whose parents are all now `SUCCEEDED` is flipped `PENDING → READY`. No periodic "scan for promotable tasks" job exists. The `outbox` carries any side effects of the promotion.
@@ -118,12 +131,14 @@ Six tables. Get these right and the rest follows.
 
 ### C. Retry policy
 
-Per-task config stored as JSONB on the task definition:
+Per-task config: a `retryPolicy` object on the task node in the DAG document, persisted as JSONB in `task_instances.retry_policy`. All fields optional; defaults apply per field:
 
-- `max_attempts`
-- `backoff_strategy` — `fixed` or `exponential`
-- `initial_delay`
-- `max_delay`
+| Field                 | Type / values                            | Default |
+|-----------------------|------------------------------------------|---------|
+| `maxAttempts`         | integer ≥ 1                              | 3       |
+| `backoffStrategy`     | `fixed` \| `exponential`                 | `fixed` |
+| `initialDelaySeconds` | integer ≥ 0                              | 5       |
+| `maxDelaySeconds`     | integer ≥ 1 (cap for exponential growth) | 300     |
 
 ### D. Durable timers
 
@@ -131,16 +146,16 @@ A `scheduled_at` column on `task_instances`. The orchestrator's poll is essentia
 
 ```sql
 SELECT * FROM task_instances
-WHERE status = 'READY' AND scheduled_at <= now()
+WHERE status IN ('READY', 'RETRY_SCHEDULED') AND scheduled_at <= now()
 FOR UPDATE SKIP LOCKED
 LIMIT N;
 ```
 
-A "sleep 3 days" step is just a task with `scheduled_at = now() + 3 days` and a no-op handler. Cron / scheduled workflows reuse the same mechanism.
+A "sleep 3 days" step is just a task with `scheduled_at = now() + 3 days` and a no-op handler. Retries reuse the same mechanism: a due `RETRY_SCHEDULED` row is claimed directly, no promotion sweeper (ADR 0006). Cron / scheduled workflows will reuse it too.
 
 ### E. Worker → engine protocol
 
-**Long-polling gRPC.** Worker calls `FetchTask(workerCapabilities)`; engine holds the call open up to 30 s waiting for matching work. Fewer round-trips than HTTP polling, no WebSocket complexity.
+**Long-polling gRPC.** Worker calls `FetchTask(workerCapabilities)`; engine holds the call open up to 30 s waiting for matching work. Fewer round-trips than HTTP polling, no WebSocket complexity. While running a task the worker renews its lease with a unary `Heartbeat(task_id, worker_id)` every ~⅓ of the remaining lease; the engine answers `LeaseRenewed` or `LeaseLost`, and on `LeaseLost` the worker interrupts the handler and does not report completion (ADR 0007).
 
 ### F. Idempotency contract
 
@@ -148,15 +163,19 @@ The engine guarantees **at-least-once** delivery. Workers must be idempotent. Th
 
 ### G. Crash recovery
 
-Postgres is the source of truth. On engine startup:
+Postgres is the source of truth. Recovery runs on engine startup and every `engine.reaper-interval` (default 5s):
 
-1. Tasks with `RUNNING` status whose lease expired → reset to `READY`.
-2. Scheduled tasks whose `scheduled_at` has passed → re-enqueue.
-3. Any unsent `outbox` rows → process.
+1. **Implemented (M2, ADR 0008).** `RUNNING` tasks whose lease expired are reaped: lease deleted, `TASK_LEASE_EXPIRED` appended, then the shared failure path retries **without backoff** (`scheduled_at = now`) or dead-letters when the attempt budget is spent. Expiry consumes the attempt taken at claim.
+2. **Implemented (M2, via ADR 0006).** Scheduled tasks whose `scheduled_at` has passed need no re-enqueue step — the claim query picks up due `READY`/`RETRY_SCHEDULED` rows directly.
+3. **Deferred.** Any unsent `outbox` rows → process (no outbox producer exists yet; see FUTURE.md).
 
 No in-memory state matters. This is the discipline.
 
-### H. Concurrency model
+### H. Timeouts vs. leases
+
+The lease is a **liveness** deadline — short, renewable by heartbeat, it only bounds crash detection. The optional per-task `timeoutSeconds` (task node field, null = unbounded) is the attempt's **absolute execution budget**, measured from the attempt's claim. Enforcement is a single rule: every lease grant or renewal expires at `min(now + lease-duration, attempt_start + timeout)`. Past the deadline a renewal is denied (`LeaseLost` reason `TIMED_OUT`) and the SDK aborts the handler, so the lease inevitably lapses and the **same reaper** that recovers crashes reclaims the row — classified as `TASK_TIMED_OUT` and retried *with* backoff (an overrun blames the task; a crash blames the worker, decision G). One recovery mechanism covers both crash and overrun. See ADR 0007.
+
+### I. Concurrency model
 
 The orchestrator's per-workflow logic is **single-threaded**. Parallelism comes from running many workflows concurrently, not from parallelizing the scheduling of one workflow's steps. Much simpler, good enough.
 
@@ -168,7 +187,7 @@ The orchestrator's per-workflow logic is **single-threaded**. Parallelism comes 
 
 - **Unit tests** for the orchestrator state machine — no DB, pure logic. Most bugs live here; test ruthlessly.
 - **Integration tests** with Testcontainers (real Postgres). Cover lease expiry recovery, retry backoff, DAG resolution, crash recovery.
-- **Chaos test** (manual is fine): a script that kills a random worker every 10 s while a workflow runs. The workflow must still complete.
+- **Chaos test:** [scripts/chaos.sh](../scripts/chaos.sh) kills a random worker container every ~10 s while a submit loop feeds sleep-task workflows (compose `restart: unless-stopped` brings workers back). Every workflow must still reach `SUCCEEDED` with an empty DLQ.
 
 ### Observability (build in from M0, do not bolt on)
 
@@ -184,7 +203,7 @@ The orchestrator's per-workflow logic is **single-threaded**. Parallelism comes 
 
 ### Deployment
 
-- **Local:** `docker compose up` brings up engine + Postgres + sample worker + dashboard.
+- **Local:** `docker compose up` brings up engine + Postgres + sample worker + dashboard. Workers scale horizontally (`--scale worker=N`; each container's hostname is its worker id) and restart on crash (`unless-stopped`).
 - **Cloud (optional, stretch):** Fly.io or Railway — cheap, free Postgres, looks impressive in a README.
 
 ### Documentation

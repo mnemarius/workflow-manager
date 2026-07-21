@@ -20,6 +20,10 @@ grpc:
   server:
     port: ${GRPC_SERVER_PORT:9090}
 
+engine:
+  lease-duration: ${ENGINE_LEASE_DURATION:30s}
+  reaper-interval: ${ENGINE_REAPER_INTERVAL:5s}
+
 management:
   endpoints:
     web:

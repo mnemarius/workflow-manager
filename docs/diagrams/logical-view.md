@@ -39,17 +39,17 @@ flowchart TB
 
 ## Module responsibilities
 
-| Module                | Responsibility                                                                   |
-|-----------------------|-----------------------------------------------------------------------------------|
-| `dashboard`           | React SPA; observes and controls runs via REST + SSE.                             |
-| `engine/api`          | REST controllers and DTOs — the client-facing submit/query surface.               |
-| `engine/grpc`         | gRPC service implementations — the worker-facing fetch/complete surface.           |
-| `engine/orchestrator` | DAG resolution, state transitions, retry policy, timer wheel. Pure logic, no DB.   |
-| `engine/persistence`  | jOOQ queries and repositories. The only package that knows SQL.                    |
-| `engine/config`       | Spring Boot wiring — datasource, gRPC server, beans.                              |
-| `protocol`            | Shared gRPC/protobuf contract between `engine/grpc` and `worker-sdk`.              |
-| `worker-sdk`          | Java client library for writing workers, plus a sample worker app.                |
-| PostgreSQL            | Single source of truth for all workflow and task state.                           |
+| Module                | Responsibility                                                                        |
+|-----------------------|---------------------------------------------------------------------------------------|
+| `dashboard`           | React SPA; observes and controls runs via REST + SSE.                                 |
+| `engine/api`          | REST controllers and DTOs — submit/query and dead-letter list/redrive surface.        |
+| `engine/grpc`         | gRPC service implementations — the worker-facing fetch/complete surface.              |
+| `engine/orchestrator` | DAG resolution, state transitions, retry policy, timer wheel. Pure logic, no DB.      |
+| `engine/persistence`  | jOOQ queries and repositories. The only package that knows SQL.                       |
+| `engine/config`       | Spring Boot wiring — datasource, gRPC server, beans.                                  |
+| `protocol`            | Shared gRPC/protobuf contract between `engine/grpc` and `worker-sdk`.                 |
+| `worker-sdk`          | Java client library for writing workers, plus a sample worker app.                    |
+| PostgreSQL            | Single source of truth for all workflow and task state.                               |
 
 ## Data model
 

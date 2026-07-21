@@ -18,6 +18,8 @@ grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
 grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
 grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc" }
 grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc" }
+grpc-testing = { module = "io.grpc:grpc-testing", version.ref = "grpc" }
+grpc-inprocess = { module = "io.grpc:grpc-inprocess", version.ref = "grpc" }
 annotations-api = { module = "org.apache.tomcat:annotations-api", version.ref = "annotationsApi" }
 jooq-meta-extensions = { module = "org.jooq:jooq-meta-extensions", version.ref = "jooq" }
 json-schema-validator = { module = "com.networknt:json-schema-validator", version.ref = "jsonSchemaValidator" }

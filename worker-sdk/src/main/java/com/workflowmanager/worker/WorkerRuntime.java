@@ -4,21 +4,29 @@ import com.workflowmanager.protocol.v1.CompleteTaskRequest;
 import com.workflowmanager.protocol.v1.Failure;
 import com.workflowmanager.protocol.v1.FetchTaskRequest;
 import com.workflowmanager.protocol.v1.FetchTaskResponse;
+import com.workflowmanager.protocol.v1.HeartbeatRequest;
+import com.workflowmanager.protocol.v1.HeartbeatResponse;
 import com.workflowmanager.protocol.v1.Success;
 import com.workflowmanager.protocol.v1.Task;
 import com.workflowmanager.protocol.v1.WorkerServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
  * Connects a set of {@link TaskHandler}s to the engine over gRPC. The loop long-polls FetchTask,
- * runs the matching handler, and reports the outcome with CompleteTask.
+ * runs the matching handler on its own virtual thread while heartbeating the lease, and reports
+ * the outcome with CompleteTask. If the engine says the lease is lost — or the task's attempt
+ * deadline passes — the handler is interrupted and no completion is reported.
  *
  * <p>Delivery is at-least-once: a handler may run more than once for the same task, so handlers
  * must be idempotent (see {@link TaskHandler}).
@@ -27,6 +35,7 @@ public final class WorkerRuntime implements AutoCloseable {
 
     private static final Logger log = Logger.getLogger(WorkerRuntime.class.getName());
     private static final long FETCH_DEADLINE_SECONDS = 35; // above the engine's ~25s long-poll window
+    private static final Duration MIN_HEARTBEAT_WAIT = Duration.ofMillis(100);
 
     private final String workerId;
     private final Map<String, TaskHandler> handlers;
@@ -38,10 +47,17 @@ public final class WorkerRuntime implements AutoCloseable {
     private Thread loop;
 
     public WorkerRuntime(String engineTarget, String workerId, Map<String, TaskHandler> handlers) {
+        this(
+                ManagedChannelBuilder.forTarget(engineTarget).usePlaintext().build(),
+                workerId,
+                handlers);
+    }
+
+    public WorkerRuntime(ManagedChannel channel, String workerId, Map<String, TaskHandler> handlers) {
         this.workerId = workerId;
         this.handlers = Map.copyOf(handlers);
         this.capabilities = List.copyOf(handlers.keySet());
-        this.channel = ManagedChannelBuilder.forTarget(engineTarget).usePlaintext().build();
+        this.channel = channel;
         this.stub = WorkerServiceGrpc.newBlockingStub(channel);
     }
 
@@ -79,12 +95,89 @@ public final class WorkerRuntime implements AutoCloseable {
             report(task, false, null, "no handler for type " + task.getType());
             return;
         }
-        try {
-            String output = handler.handle(task.getInput());
-            report(task, true, output, null);
-        } catch (Exception e) {
-            report(task, false, null, String.valueOf(e.getMessage()));
+
+        var done = new CountDownLatch(1);
+        var output = new AtomicReference<String>();
+        var failure = new AtomicReference<Exception>();
+        Thread handlerThread =
+                Thread.ofVirtual()
+                        .name("worker-handler")
+                        .start(
+                                () -> {
+                                    try {
+                                        output.set(handler.handle(task.getInput()));
+                                    } catch (Exception e) {
+                                        failure.set(e);
+                                    } finally {
+                                        done.countDown();
+                                    }
+                                });
+
+        if (!heartbeatUntilDone(task, done, handlerThread)) {
+            return; // lease lost: handler interrupted, completion suppressed (another worker owns it)
         }
+
+        if (failure.get() != null) {
+            report(task, false, null, String.valueOf(failure.get().getMessage()));
+        } else {
+            report(task, true, output.get(), null);
+        }
+    }
+
+    /** @return true when the handler finished while the lease was still held. */
+    private boolean heartbeatUntilDone(Task task, CountDownLatch done, Thread handlerThread) {
+        Instant leaseExpiresAt = Instant.parse(task.getLeaseExpiresAt());
+        Instant attemptDeadline =
+                task.getAttemptDeadline().isEmpty() ? null : Instant.parse(task.getAttemptDeadline());
+        HeartbeatRequest request =
+                HeartbeatRequest.newBuilder().setTaskId(task.getTaskId()).setWorkerId(workerId).build();
+        try {
+            while (!done.await(
+                    heartbeatWaitMillis(leaseExpiresAt, attemptDeadline), TimeUnit.MILLISECONDS)) {
+                if (attemptDeadline != null && !Instant.now().isBefore(attemptDeadline)) {
+                    log.warning(
+                            () -> "attempt deadline passed for task " + task.getTaskId() + ", aborting");
+                    handlerThread.interrupt();
+                    return false;
+                }
+                try {
+                    HeartbeatResponse response = stub.heartbeat(request);
+                    if (response.hasLost()) {
+                        log.warning(
+                                () ->
+                                        "lease lost for task "
+                                                + task.getTaskId()
+                                                + ": "
+                                                + response.getLost().getReason());
+                        handlerThread.interrupt();
+                        return false;
+                    }
+                    leaseExpiresAt = Instant.parse(response.getRenewed().getLeaseExpiresAt());
+                } catch (StatusRuntimeException e) {
+                    if (!Instant.now().isBefore(leaseExpiresAt)) {
+                        log.log(Level.WARNING, "heartbeat failing past lease expiry, abandoning task", e);
+                        handlerThread.interrupt();
+                        return false;
+                    }
+                    log.log(Level.FINE, "heartbeat failed, lease still live, retrying", e);
+                }
+            }
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            handlerThread.interrupt();
+            return false;
+        }
+    }
+
+    private static long heartbeatWaitMillis(Instant leaseExpiresAt, Instant attemptDeadline) {
+        long third = Duration.between(Instant.now(), leaseExpiresAt).toMillis() / 3;
+        long wait = Math.max(third, MIN_HEARTBEAT_WAIT.toMillis());
+        if (attemptDeadline != null) {
+            long toDeadline = Duration.between(Instant.now(), attemptDeadline).toMillis();
+            wait = Math.min(wait, Math.max(toDeadline, 0));
+        }
+        return wait;
     }
 
     private void report(Task task, boolean success, String output, String error) {
@@ -98,7 +191,7 @@ public final class WorkerRuntime implements AutoCloseable {
         try {
             stub.completeTask(request.build());
         } catch (StatusRuntimeException e) {
-            // At-least-once: if the ack is lost the engine redelivers on lease expiry (M2).
+            // At-least-once: if the ack is lost the engine redelivers on lease expiry.
             log.log(Level.WARNING, "completeTask failed for task " + task.getTaskId(), e);
         }
     }

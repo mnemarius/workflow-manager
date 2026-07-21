@@ -1,9 +1,10 @@
 package com.workflowmanager.engine.application;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.workflowmanager.engine.domain.EventType;
+import com.workflowmanager.engine.domain.FailureReason;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Rejected;
+import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import com.workflowmanager.engine.persistence.WorkflowRepository.RunningTask;
 import java.time.Clock;
@@ -23,14 +24,17 @@ public class TaskCompletionService {
 
     private final WorkflowRepository repo;
     private final CompletionPolicy policy;
-    private final ObjectMapper mapper;
+    private final TaskFailureResolver failureResolver;
     private final Clock clock;
 
     public TaskCompletionService(
-            WorkflowRepository repo, CompletionPolicy policy, ObjectMapper mapper, Clock clock) {
+            WorkflowRepository repo,
+            CompletionPolicy policy,
+            TaskFailureResolver failureResolver,
+            Clock clock) {
         this.repo = repo;
         this.policy = policy;
-        this.mapper = mapper;
+        this.failureResolver = failureResolver;
         this.clock = clock;
     }
 
@@ -63,26 +67,17 @@ public class TaskCompletionService {
             }
 
             if (success) {
-                repo.completeTaskSuccess(taskId, outputJson, now);
-                repo.insertEvent(instanceId, taskId, EventType.TASK_SUCCEEDED, null);
+                applySuccess(instanceId, taskId, outputJson, now);
             } else {
-                repo.completeTaskFailure(taskId, now);
-                repo.insertEvent(instanceId, taskId, EventType.TASK_FAILED, errorData(errorMessage));
-            }
-
-            long open = repo.countOpenTasks(instanceId);
-            switch (policy.progress(open, !success)) {
-                case SUCCEED -> {
-                    repo.succeedInstance(instanceId, outputJson, now);
-                    repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUCCEEDED, null);
-                    log.info("workflow succeeded");
-                }
-                case FAIL -> {
-                    repo.failInstance(instanceId, now);
-                    repo.insertEvent(instanceId, null, EventType.WORKFLOW_FAILED, null);
-                    log.info("workflow failed");
-                }
-                case CONTINUE -> {}
+                failureResolver.resolve(
+                        instanceId,
+                        taskId,
+                        running.attempts(),
+                        running.retryPolicyJson(),
+                        FailureReason.HANDLER_FAILED,
+                        errorMessage,
+                        now,
+                        true);
             }
             return true;
         } finally {
@@ -91,7 +86,16 @@ public class TaskCompletionService {
         }
     }
 
-    private String errorData(String errorMessage) {
-        return errorMessage == null ? null : mapper.createObjectNode().put("error", errorMessage).toString();
+    private void applySuccess(UUID instanceId, UUID taskId, String outputJson, Instant now) {
+        repo.completeTaskSuccess(taskId, outputJson, now);
+        repo.insertEvent(instanceId, taskId, EventType.TASK_SUCCEEDED, null);
+        switch (policy.progress(repo.countOpenTasks(instanceId), TaskResolution.SUCCEEDED)) {
+            case SUCCEED -> {
+                repo.succeedInstance(instanceId, outputJson, now);
+                repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUCCEEDED, null);
+                log.info("workflow succeeded");
+            }
+            case FAIL, CONTINUE -> {}
+        }
     }
 }

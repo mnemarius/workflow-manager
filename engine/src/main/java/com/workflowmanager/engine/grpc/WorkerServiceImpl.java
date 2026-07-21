@@ -1,12 +1,19 @@
 package com.workflowmanager.engine.grpc;
 
 import com.workflowmanager.engine.application.DispatchedTask;
+import com.workflowmanager.engine.application.LeaseService;
+import com.workflowmanager.engine.application.LeaseService.Lost;
+import com.workflowmanager.engine.application.LeaseService.Renewed;
 import com.workflowmanager.engine.application.TaskCompletionService;
 import com.workflowmanager.engine.application.TaskDispatchService;
 import com.workflowmanager.protocol.v1.CompleteTaskRequest;
 import com.workflowmanager.protocol.v1.CompleteTaskResponse;
 import com.workflowmanager.protocol.v1.FetchTaskRequest;
 import com.workflowmanager.protocol.v1.FetchTaskResponse;
+import com.workflowmanager.protocol.v1.HeartbeatRequest;
+import com.workflowmanager.protocol.v1.HeartbeatResponse;
+import com.workflowmanager.protocol.v1.LeaseLost;
+import com.workflowmanager.protocol.v1.LeaseRenewed;
 import com.workflowmanager.protocol.v1.NoTask;
 import com.workflowmanager.protocol.v1.Task;
 import com.workflowmanager.protocol.v1.WorkerServiceGrpc;
@@ -37,14 +44,17 @@ public class WorkerServiceImpl extends WorkerServiceGrpc.WorkerServiceImplBase {
 
     private final TaskDispatchService dispatchService;
     private final TaskCompletionService completionService;
+    private final LeaseService leaseService;
     private final Clock clock;
 
     public WorkerServiceImpl(
             TaskDispatchService dispatchService,
             TaskCompletionService completionService,
+            LeaseService leaseService,
             Clock clock) {
         this.dispatchService = dispatchService;
         this.completionService = completionService;
+        this.leaseService = leaseService;
         this.clock = clock;
     }
 
@@ -99,6 +109,34 @@ public class WorkerServiceImpl extends WorkerServiceGrpc.WorkerServiceImplBase {
         observer.onCompleted();
     }
 
+    @Override
+    public void heartbeat(HeartbeatRequest request, StreamObserver<HeartbeatResponse> observer) {
+        UUID taskId;
+        try {
+            taskId = UUID.fromString(request.getTaskId());
+        } catch (IllegalArgumentException e) {
+            observer.onError(
+                    Status.INVALID_ARGUMENT.withDescription("invalid task_id").asRuntimeException());
+            return;
+        }
+
+        HeartbeatResponse response =
+                switch (leaseService.renew(taskId, request.getWorkerId())) {
+                    case Renewed renewed ->
+                            HeartbeatResponse.newBuilder()
+                                    .setRenewed(
+                                            LeaseRenewed.newBuilder()
+                                                    .setLeaseExpiresAt(renewed.leaseExpiresAt().toString()))
+                                    .build();
+                    case Lost lost ->
+                            HeartbeatResponse.newBuilder()
+                                    .setLost(LeaseLost.newBuilder().setReason(lost.reason()))
+                                    .build();
+                };
+        observer.onNext(response);
+        observer.onCompleted();
+    }
+
     private static FetchTaskResponse taskResponse(DispatchedTask task) {
         Task.Builder builder =
                 Task.newBuilder()
@@ -107,7 +145,9 @@ public class WorkerServiceImpl extends WorkerServiceGrpc.WorkerServiceImplBase {
                         .setType(task.type() == null ? "" : task.type())
                         .setInput(task.inputJson() == null ? "" : task.inputJson())
                         .setAttempt(task.attempt())
-                        .setLeaseExpiresAt(task.leaseExpiresAt().toString());
+                        .setLeaseExpiresAt(task.leaseExpiresAt().toString())
+                        .setAttemptDeadline(
+                                task.attemptDeadline() == null ? "" : task.attemptDeadline().toString());
         return FetchTaskResponse.newBuilder().setTask(builder).build();
     }
 

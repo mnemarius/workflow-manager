@@ -55,6 +55,7 @@ If a task spans categories (e.g. "build the dashboard's workflow detail page"), 
 9. **Document major decisions as ADRs** under `docs/adr/` — one file per decision, short and to the point.
 10. **Keep docs in sync in the same change — without being asked.** When you change code, update the docs it affects *as part of that change*: `docs/ARCHITECTURE.md` (design/data model/protocols), `docs/BUSINESS.md` (scope and the milestone/progress status), `docs/STYLING.md` (conventions), the relevant ADR, and the `docs/diagrams/` views (logical/process/physical) when components, runtime flow, or deployment topology move. Keep edits tight — update what changed, don't restate the code; prevent doc bloat.
 11. **Commit every step.** Make a focused commit after each meaningful, self-contained step (component- or PR-sized), not one big commit at the end. Branch off `main` for a body of work.
+12. **Weigh the non-functional requirements.** For every task, check the NFRs in `docs/ARCHITECTURE.md` (scalability, modifiability, deployability, availability), interpret what they mean for the task at hand, and apply the ones that are relevant.
 
 ---
 

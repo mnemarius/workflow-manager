@@ -18,6 +18,24 @@ public class CompletionPolicy {
 
     public record Rejected(String reason) implements Decision {}
 
+    public sealed interface LeaseCheck permits Held, NotHeld {}
+
+    public record Held() implements LeaseCheck {}
+
+    public record NotHeld(String reason) implements LeaseCheck {}
+
+    public sealed interface FailureResolution permits Retry, Exhausted {}
+
+    public record Retry(Instant nextRunAt) implements FailureResolution {}
+
+    public record Exhausted() implements FailureResolution {}
+
+    public enum TaskResolution {
+        SUCCEEDED,
+        RETRY_SCHEDULED,
+        DEAD_LETTERED
+    }
+
     public enum InstanceOutcome {
         SUCCEED,
         FAIL,
@@ -31,26 +49,47 @@ public class CompletionPolicy {
             String reportingWorkerId,
             Instant now,
             boolean success) {
-        if (status != TaskStatus.RUNNING) {
-            return new Rejected("task is " + status + ", not RUNNING");
-        }
-        if (leaseWorkerId == null || leaseExpiresAt == null) {
-            return new Rejected("no active lease");
-        }
-        if (!leaseWorkerId.equals(reportingWorkerId)) {
-            return new Rejected("lease held by another worker");
-        }
-        if (!leaseExpiresAt.isAfter(now)) {
-            return new Rejected("lease expired");
-        }
-        return new Accepted(success);
+        return switch (checkLease(status, leaseWorkerId, leaseExpiresAt, reportingWorkerId, now)) {
+            case Held ignored -> new Accepted(success);
+            case NotHeld notHeld -> new Rejected(notHeld.reason());
+        };
     }
 
-    /** Given the workflow's remaining open tasks and whether this task failed, decide the run. */
-    public InstanceOutcome progress(long openTasks, boolean taskFailed) {
-        if (taskFailed) {
-            return InstanceOutcome.FAIL; // M1: no retries, fail the run on first task failure
+    /** The one stale-worker gate: completion and heartbeat renewal both pass through here. */
+    public LeaseCheck checkLease(
+            TaskStatus status,
+            String leaseWorkerId,
+            Instant leaseExpiresAt,
+            String claimingWorkerId,
+            Instant now) {
+        if (status != TaskStatus.RUNNING) {
+            return new NotHeld("task is " + status + ", not RUNNING");
         }
-        return openTasks == 0 ? InstanceOutcome.SUCCEED : InstanceOutcome.CONTINUE;
+        if (leaseWorkerId == null || leaseExpiresAt == null) {
+            return new NotHeld("no active lease");
+        }
+        if (!leaseWorkerId.equals(claimingWorkerId)) {
+            return new NotHeld("lease held by another worker");
+        }
+        if (!leaseExpiresAt.isAfter(now)) {
+            return new NotHeld("lease expired");
+        }
+        return new Held();
+    }
+
+    public FailureResolution resolveFailure(int attempts, RetryPolicy policy, Instant now) {
+        if (attempts < policy.maxAttempts()) {
+            return new Retry(now.plus(policy.backoffFor(attempts)));
+        }
+        return new Exhausted();
+    }
+
+    /** Given the workflow's remaining open tasks and how this task resolved, decide the run. */
+    public InstanceOutcome progress(long openTasks, TaskResolution resolution) {
+        return switch (resolution) {
+            case DEAD_LETTERED -> InstanceOutcome.FAIL;
+            case RETRY_SCHEDULED -> InstanceOutcome.CONTINUE;
+            case SUCCEEDED -> openTasks == 0 ? InstanceOutcome.SUCCEED : InstanceOutcome.CONTINUE;
+        };
     }
 }
