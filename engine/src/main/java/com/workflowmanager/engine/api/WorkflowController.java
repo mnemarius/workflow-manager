@@ -7,6 +7,7 @@ import com.workflowmanager.engine.api.dto.SubmitWorkflowResponse;
 import com.workflowmanager.engine.api.dto.TaskStatusResponse;
 import com.workflowmanager.engine.api.dto.WorkflowStatusResponse;
 import com.workflowmanager.engine.application.WorkflowSubmissionService;
+import com.workflowmanager.engine.orchestrator.DagStructureValidator;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import java.util.List;
 import java.util.UUID;
@@ -27,16 +28,19 @@ public class WorkflowController {
     private final WorkflowSubmissionService submissionService;
     private final WorkflowRepository repo;
     private final DagValidator dagValidator;
+    private final DagStructureValidator dagStructureValidator;
     private final ObjectMapper mapper;
 
     public WorkflowController(
             WorkflowSubmissionService submissionService,
             WorkflowRepository repo,
             DagValidator dagValidator,
+            DagStructureValidator dagStructureValidator,
             ObjectMapper mapper) {
         this.submissionService = submissionService;
         this.repo = repo;
         this.dagValidator = dagValidator;
+        this.dagStructureValidator = dagStructureValidator;
         this.mapper = mapper;
     }
 
@@ -52,6 +56,11 @@ public class WorkflowController {
         if (!dagErrors.isEmpty()) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST, "invalid dag: " + String.join("; ", dagErrors));
+        }
+        List<String> structureErrors = dagStructureValidator.validate(req.dag());
+        if (!structureErrors.isEmpty()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "invalid dag: " + String.join("; ", structureErrors));
         }
 
         UUID instanceId = submissionService.submit(req.name(), req.version(), req.dag(), req.input());

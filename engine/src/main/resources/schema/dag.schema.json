@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Workflow DAG (M2)",
+  "title": "Workflow DAG (M3)",
   "type": "object",
   "required": ["tasks"],
   "additionalProperties": false,
@@ -8,7 +8,6 @@
     "tasks": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 1,
       "items": {
         "type": "object",
         "required": ["key"],
@@ -17,6 +16,10 @@
           "key": { "type": "string", "minLength": 1 },
           "type": { "type": "string", "minLength": 1 },
           "input": { "type": "object" },
+          "dependsOn": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
           "timeoutSeconds": { "type": "integer", "minimum": 1 },
           "retryPolicy": {
             "type": "object",
