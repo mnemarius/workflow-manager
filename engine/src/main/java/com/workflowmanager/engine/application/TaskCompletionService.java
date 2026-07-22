@@ -1,11 +1,15 @@
 package com.workflowmanager.engine.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.workflowmanager.engine.domain.EventType;
 import com.workflowmanager.engine.domain.FailureReason;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Rejected;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
+import com.workflowmanager.engine.persistence.WorkflowRepository.LeafOutput;
 import com.workflowmanager.engine.persistence.WorkflowRepository.RunningTask;
 import java.time.Clock;
 import java.time.Instant;
@@ -26,16 +30,19 @@ public class TaskCompletionService {
     private final WorkflowRepository repo;
     private final CompletionPolicy policy;
     private final TaskFailureResolver failureResolver;
+    private final ObjectMapper mapper;
     private final Clock clock;
 
     public TaskCompletionService(
             WorkflowRepository repo,
             CompletionPolicy policy,
             TaskFailureResolver failureResolver,
+            ObjectMapper mapper,
             Clock clock) {
         this.repo = repo;
         this.policy = policy;
         this.failureResolver = failureResolver;
+        this.mapper = mapper;
         this.clock = clock;
     }
 
@@ -104,11 +111,39 @@ public class TaskCompletionService {
 
         switch (policy.progress(repo.countOpenTasks(instanceId), TaskResolution.SUCCEEDED)) {
             case SUCCEED -> {
-                repo.succeedInstance(instanceId, outputJson, now);
+                repo.succeedInstance(instanceId, aggregateWorkflowOutput(instanceId), now);
                 repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUCCEEDED, null);
                 log.info("workflow succeeded");
             }
             case FAIL, CONTINUE -> {}
         }
+    }
+
+    /**
+     * The workflow output is the aggregate of its sink tasks (the DAG's terminal results): a JSON
+     * object mapping each sink's task_key to that task's output as a nested JSON value (null output
+     * becomes JSON null). Applied uniformly, so even a single-task workflow yields
+     * {@code {"<taskKey>": <output>}}. Returns null only if there are no sinks (never expected when a
+     * workflow succeeds).
+     */
+    private String aggregateWorkflowOutput(UUID instanceId) {
+        List<LeafOutput> sinks = repo.findSinkOutputs(instanceId);
+        if (sinks.isEmpty()) {
+            return null;
+        }
+        ObjectNode aggregate = mapper.createObjectNode();
+        for (LeafOutput sink : sinks) {
+            if (sink.outputJson() == null) {
+                aggregate.putNull(sink.taskKey());
+            } else {
+                try {
+                    aggregate.set(sink.taskKey(), mapper.readTree(sink.outputJson()));
+                } catch (JsonProcessingException e) {
+                    throw new IllegalStateException(
+                            "malformed task output JSON for sink " + sink.taskKey(), e);
+                }
+            }
+        }
+        return aggregate.toString();
     }
 }

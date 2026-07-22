@@ -67,6 +67,9 @@ public class WorkflowRepository {
 
     public record TaskRow(String taskKey, String type, TaskStatus status, int attempts, String output) {}
 
+    /** A SUCCEEDED sink task's key and its output JSON (nullable), for workflow-output aggregation. */
+    public record LeafOutput(String taskKey, String outputJson) {}
+
     public record DeadLetterRow(
             UUID taskId,
             UUID workflowInstanceId,
@@ -576,6 +579,25 @@ public class WorkflowRepository {
                                         TaskStatus.valueOf(r.get(TI_STATUS)),
                                         r.get(TI_ATTEMPTS),
                                         dataOrNull(r.get(TI_OUTPUT))));
+    }
+
+    /**
+     * The SUCCEEDED sink tasks of an instance with their output JSON. A sink is a task whose id never
+     * appears as a {@code depends_on_task_id} — nothing depends on it, so it is a terminal result of
+     * the DAG (NOT EXISTS anti-join). Ordered by task_key for deterministic aggregate output. Sinks
+     * should all be SUCCEEDED when the workflow succeeds; the status filter guards against anything
+     * else slipping in.
+     */
+    public List<LeafOutput> findSinkOutputs(UUID instanceId) {
+        var isDependedOn =
+                selectOne().from(TASK_DEPENDENCIES).where(TD_DEPENDS_ON_TASK_ID.eq(TI_ID));
+        return db.select(TI_TASK_KEY, TI_OUTPUT)
+                .from(TASK_INSTANCES)
+                .where(TI_WORKFLOW_INSTANCE_ID.eq(instanceId))
+                .and(TI_STATUS.eq(TaskStatus.SUCCEEDED.name()))
+                .andNotExists(isDependedOn)
+                .orderBy(TI_TASK_KEY.asc())
+                .fetch(r -> new LeafOutput(r.get(TI_TASK_KEY), dataOrNull(r.get(TI_OUTPUT))));
     }
 
     public void releaseLease(UUID taskId) {

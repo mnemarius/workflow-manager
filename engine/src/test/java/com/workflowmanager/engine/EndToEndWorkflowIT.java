@@ -68,5 +68,11 @@ class EndToEndWorkflowIT {
         assertThat(task.get("status").asText()).isEqualTo("SUCCEEDED");
         assertThat(task.get("attempts").asInt()).isEqualTo(1);
         assertThat(task.get("output").get("echoed").get("msg").asText()).isEqualTo("hi");
+
+        // Workflow output aggregates the sink tasks keyed by task_key (M3 Step 5) — applied uniformly,
+        // so this single sink "step1" yields {"step1": <step1's output>} rather than the bare output.
+        JsonNode workflowOutput = finalView.getBody().get("output");
+        assertThat(workflowOutput.fieldNames()).toIterable().containsExactly("step1");
+        assertThat(workflowOutput.get("step1").get("echoed").get("msg").asText()).isEqualTo("hi");
     }
 }

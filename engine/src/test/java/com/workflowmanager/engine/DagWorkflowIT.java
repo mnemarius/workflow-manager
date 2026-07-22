@@ -97,6 +97,12 @@ class DagWorkflowIT {
         assertThat(statusOf(instanceId, "D")).isEqualTo("SUCCEEDED");
         assertThat(instanceStatus(instanceId)).isEqualTo("SUCCEEDED");
 
+        // Workflow output aggregates the DAG's sinks keyed by task_key (M3 Step 5). D is the lone sink
+        // (A, B, C are all depended on), so the output is {"D": <D's output>} — not A/B/C's.
+        JsonNode output = instanceOutput(instanceId);
+        assertThat(output.fieldNames()).toIterable().containsExactly("D");
+        assertThat(output.get("D").get("ok").asBoolean()).isTrue();
+
         // Event ordering: A succeeds, then B and C become READY, then D becomes READY only after
         // both B and C have succeeded.
         List<String> events =
@@ -138,6 +144,12 @@ class DagWorkflowIT {
         var view = rest.getForEntity("/workflows/" + instanceId, JsonNode.class);
         assertThat(view.getStatusCode()).isEqualTo(HttpStatus.OK);
         return view.getBody().get("status").asText();
+    }
+
+    private JsonNode instanceOutput(UUID instanceId) {
+        var view = rest.getForEntity("/workflows/" + instanceId, JsonNode.class);
+        assertThat(view.getStatusCode()).isEqualTo(HttpStatus.OK);
+        return view.getBody().get("output");
     }
 
     private String statusOf(UUID instanceId, String taskKey) {
