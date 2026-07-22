@@ -100,7 +100,7 @@ public class WorkflowRepository {
                 .value1();
     }
 
-    public void insertReadyTask(
+    public UUID insertReadyTask(
             UUID instanceId,
             String taskKey,
             String type,
@@ -110,17 +110,54 @@ public class WorkflowRepository {
             Integer timeoutSeconds,
             Instant scheduledAt,
             Instant now) {
-        db.insertInto(TASK_INSTANCES)
+        return insertTask(
+                TaskStatus.READY,
+                instanceId,
+                taskKey,
+                type,
+                inputJson,
+                maxAttempts,
+                retryPolicyJson,
+                timeoutSeconds,
+                scheduledAt,
+                now);
+    }
+
+    /**
+     * Inserts a task in the given initial status (READY when it has no dependencies, PENDING when it
+     * waits on others) and returns the generated id, which the caller needs to wire dependency edges.
+     */
+    public UUID insertTask(
+            TaskStatus status,
+            UUID instanceId,
+            String taskKey,
+            String type,
+            String inputJson,
+            int maxAttempts,
+            String retryPolicyJson,
+            Integer timeoutSeconds,
+            Instant scheduledAt,
+            Instant now) {
+        return db.insertInto(TASK_INSTANCES)
                 .set(TI_WORKFLOW_INSTANCE_ID, instanceId)
                 .set(TI_TASK_KEY, taskKey)
                 .set(TI_TYPE, type)
-                .set(TI_STATUS, TaskStatus.READY.name())
+                .set(TI_STATUS, status.name())
                 .set(TI_MAX_ATTEMPTS, maxAttempts)
                 .set(TI_TIMEOUT_SECONDS, timeoutSeconds)
                 .set(TI_RETRY_POLICY, jsonbOrNull(retryPolicyJson))
                 .set(TI_INPUT, jsonbOrNull(inputJson))
                 .set(TI_SCHEDULED_AT, scheduledAt)
                 .set(TI_UPDATED_AT, now)
+                .returningResult(TI_ID)
+                .fetchOne()
+                .value1();
+    }
+
+    public void insertDependency(UUID taskId, UUID dependsOnTaskId) {
+        db.insertInto(TASK_DEPENDENCIES)
+                .set(TD_TASK_ID, taskId)
+                .set(TD_DEPENDS_ON_TASK_ID, dependsOnTaskId)
                 .execute();
     }
 

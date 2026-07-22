@@ -2,11 +2,15 @@ package com.workflowmanager.engine.application;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.workflowmanager.engine.domain.EventType;
+import com.workflowmanager.engine.domain.TaskStatus;
 import com.workflowmanager.engine.orchestrator.DagPlanner;
 import com.workflowmanager.engine.orchestrator.PlannedTask;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,18 +43,36 @@ public class WorkflowSubmissionService {
 
         MDC.put("workflow_id", instanceId.toString());
         try {
-            for (PlannedTask task : planner.plan(dag, inputJson)) {
-                repo.insertReadyTask(
-                        instanceId,
-                        task.key(),
-                        task.type(),
-                        task.inputJson(),
-                        task.retryPolicy().maxAttempts(),
-                        task.retryPolicy().toJson(),
-                        task.timeoutSeconds(),
-                        now,
-                        now);
+            List<PlannedTask> plannedTasks = planner.plan(dag, inputJson);
+
+            // Pass 1: insert every task (READY when it has no deps, else PENDING) and remember its id.
+            Map<String, UUID> taskIdsByKey = new HashMap<>();
+            for (PlannedTask task : plannedTasks) {
+                TaskStatus status =
+                        task.dependsOn().isEmpty() ? TaskStatus.READY : TaskStatus.PENDING;
+                UUID taskId =
+                        repo.insertTask(
+                                status,
+                                instanceId,
+                                task.key(),
+                                task.type(),
+                                task.inputJson(),
+                                task.retryPolicy().maxAttempts(),
+                                task.retryPolicy().toJson(),
+                                task.timeoutSeconds(),
+                                now,
+                                now);
+                taskIdsByKey.put(task.key(), taskId);
             }
+
+            // Pass 2: wire dependency edges now that every task key has an id.
+            for (PlannedTask task : plannedTasks) {
+                UUID taskId = taskIdsByKey.get(task.key());
+                for (String dependsOnKey : task.dependsOn()) {
+                    repo.insertDependency(taskId, taskIdsByKey.get(dependsOnKey));
+                }
+            }
+
             repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUBMITTED, null);
             log.info("workflow submitted name={} version={}", name, version);
             return instanceId;

@@ -23,6 +23,7 @@ final class Schema {
     static final Table<?> WORKFLOW_INSTANCES = table(name("workflow_instances"));
     static final Table<?> TASK_INSTANCES = table(name("task_instances"));
     static final Table<?> TASK_LEASES = table(name("task_leases"));
+    static final Table<?> TASK_DEPENDENCIES = table(name("task_dependencies"));
     static final Table<?> EVENTS = table(name("events"));
 
     // workflow_definitions
@@ -68,6 +69,11 @@ final class Schema {
     static final Field<String> TL_WORKER_ID = field(name("worker_id"), SQLDataType.VARCHAR);
     static final Field<Instant> TL_LEASE_EXPIRES_AT =
             field(name("lease_expires_at"), SQLDataType.INSTANT);
+
+    // task_dependencies
+    static final Field<UUID> TD_TASK_ID = field(name("task_id"), SQLDataType.UUID);
+    static final Field<UUID> TD_DEPENDS_ON_TASK_ID =
+            field(name("depends_on_task_id"), SQLDataType.UUID);
 
     // events
     static final Field<UUID> EV_WORKFLOW_INSTANCE_ID =
