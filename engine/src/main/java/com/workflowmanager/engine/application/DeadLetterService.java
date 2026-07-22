@@ -6,6 +6,7 @@ import com.workflowmanager.engine.persistence.WorkflowRepository;
 import com.workflowmanager.engine.persistence.WorkflowRepository.RedriveCandidate;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,8 +56,13 @@ public class DeadLetterService {
         try {
             repo.redriveTask(taskId, now);
             repo.reopenFailedInstance(instanceId, now);
+            // Undo the downstream cascade: dependents cancelled when this task dead-lettered go back
+            // to PENDING (not READY — they re-block until their deps succeed). No per-task event: they
+            // simply return to the state they held before the cascade; TASK_REDRIVEN stays the single
+            // redrive event.
+            List<UUID> restored = repo.restoreCancelledDependents(taskId, now);
             repo.insertEvent(instanceId, taskId, EventType.TASK_REDRIVEN, null);
-            log.info("task redriven");
+            log.info("task redriven; restored {} cancelled dependent(s)", restored.size());
             return new Redriven(instanceId);
         } finally {
             MDC.remove("workflow_id");

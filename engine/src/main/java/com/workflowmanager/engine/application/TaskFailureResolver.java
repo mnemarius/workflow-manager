@@ -12,6 +12,7 @@ import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
 import com.workflowmanager.engine.orchestrator.RetryPolicy;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,6 +74,18 @@ public class TaskFailureResolver {
                                 EventType.TASK_DEAD_LETTERED,
                                 deadLetterData(reason, attempts));
                         log.warn("task dead-lettered reason={} attempts={}", reason, attempts);
+
+                        // Downstream cascade: transitive dependents can never run now, so cancel the
+                        // PENDING ones (siblings untouched). The subsequent progress() still FAILs the
+                        // instance. Redrive of this task restores them (DeadLetterService).
+                        List<UUID> cancelled = repo.cancelDependents(taskId, now);
+                        for (UUID cancelledTaskId : cancelled) {
+                            repo.insertEvent(
+                                    instanceId, cancelledTaskId, EventType.TASK_CANCELLED, null);
+                        }
+                        if (!cancelled.isEmpty()) {
+                            log.info("cancelled {} downstream dependent(s)", cancelled.size());
+                        }
                         yield TaskResolution.DEAD_LETTERED;
                     }
                 };

@@ -3,7 +3,9 @@ package com.workflowmanager.engine.persistence;
 import static com.workflowmanager.engine.persistence.Schema.*;
 import static org.jooq.impl.DSL.field;
 import static org.jooq.impl.DSL.name;
+import static org.jooq.impl.DSL.select;
 import static org.jooq.impl.DSL.selectOne;
+import static org.jooq.impl.DSL.table;
 
 import com.workflowmanager.engine.domain.EventType;
 import com.workflowmanager.engine.domain.FailureReason;
@@ -13,9 +15,11 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.jooq.CommonTableExpression;
 import org.jooq.DSLContext;
 import org.jooq.Field;
 import org.jooq.JSONB;
+import org.jooq.Record1;
 import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Repository;
 
@@ -380,6 +384,67 @@ public class WorkflowRepository {
                 .where(TI_ID.eq(taskId))
                 .execute();
         releaseLease(taskId);
+    }
+
+    /**
+     * Transitive dependents of {@code taskId}: every task reachable by following dependency edges in
+     * reverse. An edge {@code (task_id, depends_on_task_id)} means {@code task_id} depends on
+     * {@code depends_on_task_id}; so the direct dependents of a task are the rows whose
+     * {@code depends_on_task_id} equals it, and we recurse on those. Expressed as a recursive CTE
+     * ({@code WITH RECURSIVE dependents(id) AS (seed UNION ALL step)}). Does NOT include
+     * {@code taskId} itself. Edges live within a single workflow instance, so no instance filter is
+     * needed.
+     */
+    private CommonTableExpression<Record1<UUID>> transitiveDependents(UUID taskId) {
+        Field<UUID> dependentId = field(name("dependents", "id"), SQLDataType.UUID);
+        return name("dependents")
+                .fields("id")
+                .as(
+                        select(TD_TASK_ID)
+                                .from(TASK_DEPENDENCIES)
+                                .where(TD_DEPENDS_ON_TASK_ID.eq(taskId))
+                                .unionAll(
+                                        select(TD_TASK_ID)
+                                                .from(TASK_DEPENDENCIES)
+                                                .join(table(name("dependents")))
+                                                .on(TD_DEPENDS_ON_TASK_ID.eq(dependentId))));
+    }
+
+    /**
+     * On dead-letter: cancel every transitive dependent that is still PENDING (a dependent of a
+     * just-failed task can only be PENDING — it was never dispatchable). CANCELLED is terminal, so we
+     * stamp finished_at like {@link #completeTaskFailure}. Siblings are untouched. Returns the ids
+     * actually cancelled so the caller can emit an event per task.
+     */
+    public List<UUID> cancelDependents(UUID taskId, Instant now) {
+        CommonTableExpression<Record1<UUID>> dependents = transitiveDependents(taskId);
+        return db.withRecursive(dependents)
+                .update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.CANCELLED.name())
+                .set(TI_FINISHED_AT, now)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_ID.in(select(field(name("dependents", "id"), SQLDataType.UUID)).from(dependents)))
+                .and(TI_STATUS.eq(TaskStatus.PENDING.name()))
+                .returningResult(TI_ID)
+                .fetch(TI_ID);
+    }
+
+    /**
+     * On redrive of a previously dead-lettered task: restore its transitive dependents that were
+     * CANCELLED back to PENDING (not READY — they re-block until their own dependencies succeed
+     * again), clearing finished_at. Returns the restored ids.
+     */
+    public List<UUID> restoreCancelledDependents(UUID taskId, Instant now) {
+        CommonTableExpression<Record1<UUID>> dependents = transitiveDependents(taskId);
+        return db.withRecursive(dependents)
+                .update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.PENDING.name())
+                .set(TI_FINISHED_AT, (Instant) null)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_ID.in(select(field(name("dependents", "id"), SQLDataType.UUID)).from(dependents)))
+                .and(TI_STATUS.eq(TaskStatus.CANCELLED.name()))
+                .returningResult(TI_ID)
+                .fetch(TI_ID);
     }
 
     public List<DeadLetterRow> findDeadLetters(int limit) {
