@@ -1,6 +1,9 @@
 package com.workflowmanager.engine.persistence;
 
 import static com.workflowmanager.engine.persistence.Schema.*;
+import static org.jooq.impl.DSL.field;
+import static org.jooq.impl.DSL.name;
+import static org.jooq.impl.DSL.selectOne;
 
 import com.workflowmanager.engine.domain.EventType;
 import com.workflowmanager.engine.domain.FailureReason;
@@ -11,7 +14,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.jooq.DSLContext;
+import org.jooq.Field;
 import org.jooq.JSONB;
+import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -304,6 +309,53 @@ public class WorkflowRepository {
                 .where(TI_ID.eq(taskId))
                 .execute();
         releaseLease(taskId);
+    }
+
+    /**
+     * Event-driven fan-in (ADR 0006 — no promotion sweeper): promote every PENDING task in this
+     * workflow whose dependencies are now ALL SUCCEEDED to READY, and return the ids promoted so the
+     * caller can emit events. A task is promoted iff no row in {@code task_dependencies} for it points
+     * at an upstream task that is not yet SUCCEEDED (NOT EXISTS correlated subquery).
+     *
+     * <p>Concurrency: two sibling completions of a shared child's parents can run in overlapping
+     * transactions (independent gRPC CompleteTask calls). Under READ COMMITTED a bare conditional
+     * UPDATE would let both miss the child (neither sees the other's not-yet-committed SUCCEEDED),
+     * orphaning it. To close that fan-in race we first take a blocking {@code FOR UPDATE} lock on this
+     * workflow's PENDING rows (ordered by id to avoid deadlock, NOT skip-locked): the second completer
+     * blocks until the first commits, then re-evaluates on a fresh snapshot and promotes the child.
+     * The lock is scoped to one workflow instance, so completions in other workflows are unaffected.
+     */
+    public List<UUID> promoteReadyDependents(UUID workflowInstanceId, Instant now) {
+        // Serialize sibling completions within this workflow on its PENDING set (see javadoc).
+        db.select(TI_ID)
+                .from(TASK_INSTANCES)
+                .where(TI_WORKFLOW_INSTANCE_ID.eq(workflowInstanceId))
+                .and(TI_STATUS.eq(TaskStatus.PENDING.name()))
+                .orderBy(TI_ID.asc())
+                .forUpdate()
+                .fetch();
+
+        Field<UUID> pendingTaskId = field(name("task_instances", "id"), SQLDataType.UUID);
+        Field<UUID> upstreamId = field(name("upstream", "id"), SQLDataType.UUID);
+        Field<String> upstreamStatus = field(name("upstream", "status"), SQLDataType.VARCHAR);
+
+        var hasUnfinishedDependency =
+                selectOne()
+                        .from(TASK_DEPENDENCIES)
+                        .join(TASK_INSTANCES.as("upstream"))
+                        .on(upstreamId.eq(TD_DEPENDS_ON_TASK_ID))
+                        .where(TD_TASK_ID.eq(pendingTaskId))
+                        .and(upstreamStatus.ne(TaskStatus.SUCCEEDED.name()));
+
+        return db.update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.READY.name())
+                .set(TI_SCHEDULED_AT, now)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_WORKFLOW_INSTANCE_ID.eq(workflowInstanceId))
+                .and(TI_STATUS.eq(TaskStatus.PENDING.name()))
+                .andNotExists(hasUnfinishedDependency)
+                .returningResult(TI_ID)
+                .fetch(TI_ID);
     }
 
     public void scheduleRetry(UUID taskId, Instant nextRunAt, String lastErrorJson, Instant now) {

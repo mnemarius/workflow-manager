@@ -3,6 +3,7 @@ package com.workflowmanager.engine.domain;
 public enum EventType {
     WORKFLOW_SUBMITTED,
     TASK_DISPATCHED,
+    TASK_READY,
     TASK_SUCCEEDED,
     TASK_RETRY_SCHEDULED,
     TASK_LEASE_EXPIRED,

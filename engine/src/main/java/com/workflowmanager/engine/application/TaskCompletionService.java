@@ -9,6 +9,7 @@ import com.workflowmanager.engine.persistence.WorkflowRepository;
 import com.workflowmanager.engine.persistence.WorkflowRepository.RunningTask;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -89,6 +90,18 @@ public class TaskCompletionService {
     private void applySuccess(UUID instanceId, UUID taskId, String outputJson, Instant now) {
         repo.completeTaskSuccess(taskId, outputJson, now);
         repo.insertEvent(instanceId, taskId, EventType.TASK_SUCCEEDED, null);
+
+        // Event-driven fan-in: any PENDING dependent whose deps are now all SUCCEEDED becomes READY.
+        // Promotion never changes countOpenTasks (PENDING and READY are both "open"), so the
+        // workflow-completion check below still only SUCCEEDs once nothing is left to run.
+        List<UUID> promoted = repo.promoteReadyDependents(instanceId, now);
+        for (UUID readyTaskId : promoted) {
+            repo.insertEvent(instanceId, readyTaskId, EventType.TASK_READY, null);
+        }
+        if (!promoted.isEmpty()) {
+            log.info("promoted {} dependent task(s) to READY", promoted.size());
+        }
+
         switch (policy.progress(repo.countOpenTasks(instanceId), TaskResolution.SUCCEEDED)) {
             case SUCCEED -> {
                 repo.succeedInstance(instanceId, outputJson, now);
