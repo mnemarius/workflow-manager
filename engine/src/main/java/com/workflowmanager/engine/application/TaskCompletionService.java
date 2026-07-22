@@ -1,14 +1,19 @@
 package com.workflowmanager.engine.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.workflowmanager.engine.domain.EventType;
 import com.workflowmanager.engine.domain.FailureReason;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.Rejected;
 import com.workflowmanager.engine.orchestrator.CompletionPolicy.TaskResolution;
 import com.workflowmanager.engine.persistence.WorkflowRepository;
+import com.workflowmanager.engine.persistence.WorkflowRepository.LeafOutput;
 import com.workflowmanager.engine.persistence.WorkflowRepository.RunningTask;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,16 +30,19 @@ public class TaskCompletionService {
     private final WorkflowRepository repo;
     private final CompletionPolicy policy;
     private final TaskFailureResolver failureResolver;
+    private final ObjectMapper mapper;
     private final Clock clock;
 
     public TaskCompletionService(
             WorkflowRepository repo,
             CompletionPolicy policy,
             TaskFailureResolver failureResolver,
+            ObjectMapper mapper,
             Clock clock) {
         this.repo = repo;
         this.policy = policy;
         this.failureResolver = failureResolver;
+        this.mapper = mapper;
         this.clock = clock;
     }
 
@@ -89,13 +97,53 @@ public class TaskCompletionService {
     private void applySuccess(UUID instanceId, UUID taskId, String outputJson, Instant now) {
         repo.completeTaskSuccess(taskId, outputJson, now);
         repo.insertEvent(instanceId, taskId, EventType.TASK_SUCCEEDED, null);
+
+        // Event-driven fan-in: any PENDING dependent whose deps are now all SUCCEEDED becomes READY.
+        // Promotion never changes countOpenTasks (PENDING and READY are both "open"), so the
+        // workflow-completion check below still only SUCCEEDs once nothing is left to run.
+        List<UUID> promoted = repo.promoteReadyDependents(instanceId, now);
+        for (UUID readyTaskId : promoted) {
+            repo.insertEvent(instanceId, readyTaskId, EventType.TASK_READY, null);
+        }
+        if (!promoted.isEmpty()) {
+            log.info("promoted {} dependent task(s) to READY", promoted.size());
+        }
+
         switch (policy.progress(repo.countOpenTasks(instanceId), TaskResolution.SUCCEEDED)) {
             case SUCCEED -> {
-                repo.succeedInstance(instanceId, outputJson, now);
+                repo.succeedInstance(instanceId, aggregateWorkflowOutput(instanceId), now);
                 repo.insertEvent(instanceId, null, EventType.WORKFLOW_SUCCEEDED, null);
                 log.info("workflow succeeded");
             }
             case FAIL, CONTINUE -> {}
         }
+    }
+
+    /**
+     * The workflow output is the aggregate of its sink tasks (the DAG's terminal results): a JSON
+     * object mapping each sink's task_key to that task's output as a nested JSON value (null output
+     * becomes JSON null). Applied uniformly, so even a single-task workflow yields
+     * {@code {"<taskKey>": <output>}}. Returns null only if there are no sinks (never expected when a
+     * workflow succeeds).
+     */
+    private String aggregateWorkflowOutput(UUID instanceId) {
+        List<LeafOutput> sinks = repo.findSinkOutputs(instanceId);
+        if (sinks.isEmpty()) {
+            return null;
+        }
+        ObjectNode aggregate = mapper.createObjectNode();
+        for (LeafOutput sink : sinks) {
+            if (sink.outputJson() == null) {
+                aggregate.putNull(sink.taskKey());
+            } else {
+                try {
+                    aggregate.set(sink.taskKey(), mapper.readTree(sink.outputJson()));
+                } catch (JsonProcessingException e) {
+                    throw new IllegalStateException(
+                            "malformed task output JSON for sink " + sink.taskKey(), e);
+                }
+            }
+        }
+        return aggregate.toString();
     }
 }

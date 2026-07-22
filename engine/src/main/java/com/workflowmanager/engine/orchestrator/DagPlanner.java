@@ -8,7 +8,8 @@ import org.springframework.stereotype.Component;
 /**
  * Turns a validated DAG document into the tasks to create. Pure logic — no DB, no Spring beans
  * touched. The DAG shape is guaranteed by the JSON Schema at the API boundary (ADR 0003).
- * M1 has no dependency edges: every task starts READY.
+ * Each task's optional {@code dependsOn} edges are parsed into {@link PlannedTask#dependsOn()};
+ * a task with no dependencies starts READY, one with dependencies starts PENDING.
  */
 @Component
 public class DagPlanner {
@@ -22,7 +23,16 @@ public class DagPlanner {
             RetryPolicy retryPolicy = RetryPolicy.from(node.get("retryPolicy"));
             Integer timeoutSeconds =
                     node.hasNonNull("timeoutSeconds") ? node.get("timeoutSeconds").asInt() : null;
-            tasks.add(new PlannedTask(key, type, input, retryPolicy, timeoutSeconds));
+            List<String> dependsOn = new ArrayList<>();
+            JsonNode dependsOnNode = node.get("dependsOn");
+            if (dependsOnNode != null && dependsOnNode.isArray()) {
+                for (JsonNode dep : dependsOnNode) {
+                    dependsOn.add(dep.asText());
+                }
+            }
+            tasks.add(
+                    new PlannedTask(
+                            key, type, input, retryPolicy, timeoutSeconds, List.copyOf(dependsOn)));
         }
         return List.copyOf(tasks);
     }

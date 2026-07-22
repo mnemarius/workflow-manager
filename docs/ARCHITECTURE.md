@@ -92,13 +92,14 @@ These are lenses, not a checklist. For every task, interpret what each attribute
 
 ## Data model
 
-Six tables. Get these right and the rest follows.
+Seven tables. Get these right and the rest follows.
 
 | Table                  | Purpose                                                                                              |
 |------------------------|------------------------------------------------------------------------------------------------------|
 | `workflow_definitions` | Versioned DAG templates. `(id, name, version, dag JSONB, created_at)`.                               |
 | `workflow_instances`   | One row per submitted workflow run. `(id, definition_id, status, input JSONB, output JSONB, …)`.     |
 | `task_instances`       | One row per step in a workflow run. Status, attempts, per-attempt timeout, failure metadata (`failure_reason`, `last_error`), scheduled/started/finished timestamps. |
+| `task_dependencies`    | DAG edges (M3, [V5](../engine/src/main/resources/db/migration/V5__task_dependencies.sql)). `(task_id, depends_on_task_id)` — one row per edge: `task_id` waits on `depends_on_task_id`. Indexed on `depends_on_task_id` for the reverse lookup (ADR 0010). |
 | `task_leases`          | Currently-held tasks. `(task_id, worker_id, lease_expires_at)` — drives crashed-worker recovery.     |
 | `events`               | Append-only log of every state transition. Audit trail, debug log, replay source.                    |
 | `outbox`               | Pending side effects (task enqueue, external notifications). Drained transactionally.                |
@@ -113,9 +114,13 @@ Six tables. Get these right and the rest follows.
 | `SUCCEEDED`       | Worker reported success. Terminal. Triggers downstream `PENDING → READY` promotion.                  |
 | `FAILED`          | Retry budget exhausted. Terminal — and the dead-letter queue itself: `FAILED` rows carry failure metadata, are listed by `GET /dead-letters`, and can be redriven back to `READY` (ADR 0009). |
 | `RETRY_SCHEDULED` | Worker failed; retry scheduled. Claimable when due: `RETRY_SCHEDULED → RUNNING` on claim (ADR 0006). |
-| `CANCELLED`       | Externally cancelled (via API or because the parent workflow was cancelled). Terminal.               |
+| `CANCELLED`       | Terminal. Set when a dead-lettered task's transitive dependents are cascade-cancelled `PENDING → CANCELLED` (ADR 0010), or by external/parent cancellation. Redrive of the failed upstream restores them `CANCELLED → PENDING`. |
 
-**Promotion is event-driven, not query-driven.** When a task transitions to `SUCCEEDED`, the orchestrator inspects its DAG children in the same transaction; any child whose parents are all now `SUCCEEDED` is flipped `PENDING → READY`. No periodic "scan for promotable tasks" job exists. The `outbox` carries any side effects of the promotion.
+**Dependencies are edges, not an array.** A task's `dependsOn` keys become rows in `task_dependencies` on submit (ADR 0010): a task with no edges starts `READY`, a task with edges starts `PENDING` (not claimable). The graph is validated at the API boundary before persisting — unique keys, resolvable refs, no self-deps, and acyclicity via Kahn's topological sort (`DagStructureValidator`, ADR 0003).
+
+**Promotion is event-driven, not query-driven.** When a task transitions to `SUCCEEDED`, the orchestrator promotes, in the same transaction, every `PENDING` task in that workflow whose dependencies are now **all** `SUCCEEDED` (`NOT EXISTS` an unfinished upstream) — `PENDING → READY`, event `TASK_READY`. No periodic "scan for promotable tasks" job exists. Sibling completions that share a fan-in child are serialized by a blocking, id-ordered `FOR UPDATE` on the workflow's `PENDING` set (deliberately **not** `SKIP LOCKED`), which closes a `READ COMMITTED` race that would otherwise orphan the join task (ADR 0010).
+
+**Failure cascades; success aggregates.** On dead-letter the transitive dependents (recursive CTE) are cancelled and the workflow fails; DLQ redrive restores them. On success the **workflow output** is the keyed aggregate of the *sink* tasks — those nothing depends on — `{ "<taskKey>": <output>, … }`, applied uniformly (a single-task workflow now yields `{"<key>": <output>}`). All of this runs through the one shared failure path and the completion transaction; the `outbox` carries any side effects.
 
 ---
 

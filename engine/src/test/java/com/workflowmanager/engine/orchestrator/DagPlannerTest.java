@@ -39,6 +39,25 @@ class DagPlannerTest {
     }
 
     @Test
+    void plan_taskWithoutDependsOn_defaultsToEmptyList() {
+        var dag = parse("{\"tasks\":[{\"key\":\"step1\"}]}");
+        var tasks = planner.plan(dag, null);
+        assertThat(tasks.get(0).dependsOn()).isEmpty();
+    }
+
+    @Test
+    void plan_taskWithDependsOn_parsesKeys() {
+        var dag =
+                parse(
+                        "{\"tasks\":[{\"key\":\"a\"},{\"key\":\"b\"},"
+                                + "{\"key\":\"c\",\"dependsOn\":[\"a\",\"b\"]}]}");
+        var tasks = planner.plan(dag, null);
+        assertThat(tasks.get(0).dependsOn()).isEmpty();
+        assertThat(tasks.get(1).dependsOn()).isEmpty();
+        assertThat(tasks.get(2).dependsOn()).containsExactly("a", "b");
+    }
+
+    @Test
     void plan_taskWithRetryPolicy_parsesPolicy() {
         var dag =
                 parse(

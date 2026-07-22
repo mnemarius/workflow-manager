@@ -1,6 +1,11 @@
 package com.workflowmanager.engine.persistence;
 
 import static com.workflowmanager.engine.persistence.Schema.*;
+import static org.jooq.impl.DSL.field;
+import static org.jooq.impl.DSL.name;
+import static org.jooq.impl.DSL.select;
+import static org.jooq.impl.DSL.selectOne;
+import static org.jooq.impl.DSL.table;
 
 import com.workflowmanager.engine.domain.EventType;
 import com.workflowmanager.engine.domain.FailureReason;
@@ -10,8 +15,12 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.jooq.CommonTableExpression;
 import org.jooq.DSLContext;
+import org.jooq.Field;
 import org.jooq.JSONB;
+import org.jooq.Record1;
+import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -58,6 +67,9 @@ public class WorkflowRepository {
 
     public record TaskRow(String taskKey, String type, TaskStatus status, int attempts, String output) {}
 
+    /** A SUCCEEDED sink task's key and its output JSON (nullable), for workflow-output aggregation. */
+    public record LeafOutput(String taskKey, String outputJson) {}
+
     public record DeadLetterRow(
             UUID taskId,
             UUID workflowInstanceId,
@@ -100,7 +112,7 @@ public class WorkflowRepository {
                 .value1();
     }
 
-    public void insertReadyTask(
+    public UUID insertReadyTask(
             UUID instanceId,
             String taskKey,
             String type,
@@ -110,17 +122,54 @@ public class WorkflowRepository {
             Integer timeoutSeconds,
             Instant scheduledAt,
             Instant now) {
-        db.insertInto(TASK_INSTANCES)
+        return insertTask(
+                TaskStatus.READY,
+                instanceId,
+                taskKey,
+                type,
+                inputJson,
+                maxAttempts,
+                retryPolicyJson,
+                timeoutSeconds,
+                scheduledAt,
+                now);
+    }
+
+    /**
+     * Inserts a task in the given initial status (READY when it has no dependencies, PENDING when it
+     * waits on others) and returns the generated id, which the caller needs to wire dependency edges.
+     */
+    public UUID insertTask(
+            TaskStatus status,
+            UUID instanceId,
+            String taskKey,
+            String type,
+            String inputJson,
+            int maxAttempts,
+            String retryPolicyJson,
+            Integer timeoutSeconds,
+            Instant scheduledAt,
+            Instant now) {
+        return db.insertInto(TASK_INSTANCES)
                 .set(TI_WORKFLOW_INSTANCE_ID, instanceId)
                 .set(TI_TASK_KEY, taskKey)
                 .set(TI_TYPE, type)
-                .set(TI_STATUS, TaskStatus.READY.name())
+                .set(TI_STATUS, status.name())
                 .set(TI_MAX_ATTEMPTS, maxAttempts)
                 .set(TI_TIMEOUT_SECONDS, timeoutSeconds)
                 .set(TI_RETRY_POLICY, jsonbOrNull(retryPolicyJson))
                 .set(TI_INPUT, jsonbOrNull(inputJson))
                 .set(TI_SCHEDULED_AT, scheduledAt)
                 .set(TI_UPDATED_AT, now)
+                .returningResult(TI_ID)
+                .fetchOne()
+                .value1();
+    }
+
+    public void insertDependency(UUID taskId, UUID dependsOnTaskId) {
+        db.insertInto(TASK_DEPENDENCIES)
+                .set(TD_TASK_ID, taskId)
+                .set(TD_DEPENDS_ON_TASK_ID, dependsOnTaskId)
                 .execute();
     }
 
@@ -269,6 +318,53 @@ public class WorkflowRepository {
         releaseLease(taskId);
     }
 
+    /**
+     * Event-driven fan-in (ADR 0006 — no promotion sweeper): promote every PENDING task in this
+     * workflow whose dependencies are now ALL SUCCEEDED to READY, and return the ids promoted so the
+     * caller can emit events. A task is promoted iff no row in {@code task_dependencies} for it points
+     * at an upstream task that is not yet SUCCEEDED (NOT EXISTS correlated subquery).
+     *
+     * <p>Concurrency: two sibling completions of a shared child's parents can run in overlapping
+     * transactions (independent gRPC CompleteTask calls). Under READ COMMITTED a bare conditional
+     * UPDATE would let both miss the child (neither sees the other's not-yet-committed SUCCEEDED),
+     * orphaning it. To close that fan-in race we first take a blocking {@code FOR UPDATE} lock on this
+     * workflow's PENDING rows (ordered by id to avoid deadlock, NOT skip-locked): the second completer
+     * blocks until the first commits, then re-evaluates on a fresh snapshot and promotes the child.
+     * The lock is scoped to one workflow instance, so completions in other workflows are unaffected.
+     */
+    public List<UUID> promoteReadyDependents(UUID workflowInstanceId, Instant now) {
+        // Serialize sibling completions within this workflow on its PENDING set (see javadoc).
+        db.select(TI_ID)
+                .from(TASK_INSTANCES)
+                .where(TI_WORKFLOW_INSTANCE_ID.eq(workflowInstanceId))
+                .and(TI_STATUS.eq(TaskStatus.PENDING.name()))
+                .orderBy(TI_ID.asc())
+                .forUpdate()
+                .fetch();
+
+        Field<UUID> pendingTaskId = field(name("task_instances", "id"), SQLDataType.UUID);
+        Field<UUID> upstreamId = field(name("upstream", "id"), SQLDataType.UUID);
+        Field<String> upstreamStatus = field(name("upstream", "status"), SQLDataType.VARCHAR);
+
+        var hasUnfinishedDependency =
+                selectOne()
+                        .from(TASK_DEPENDENCIES)
+                        .join(TASK_INSTANCES.as("upstream"))
+                        .on(upstreamId.eq(TD_DEPENDS_ON_TASK_ID))
+                        .where(TD_TASK_ID.eq(pendingTaskId))
+                        .and(upstreamStatus.ne(TaskStatus.SUCCEEDED.name()));
+
+        return db.update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.READY.name())
+                .set(TI_SCHEDULED_AT, now)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_WORKFLOW_INSTANCE_ID.eq(workflowInstanceId))
+                .and(TI_STATUS.eq(TaskStatus.PENDING.name()))
+                .andNotExists(hasUnfinishedDependency)
+                .returningResult(TI_ID)
+                .fetch(TI_ID);
+    }
+
     public void scheduleRetry(UUID taskId, Instant nextRunAt, String lastErrorJson, Instant now) {
         db.update(TASK_INSTANCES)
                 .set(TI_STATUS, TaskStatus.RETRY_SCHEDULED.name())
@@ -291,6 +387,67 @@ public class WorkflowRepository {
                 .where(TI_ID.eq(taskId))
                 .execute();
         releaseLease(taskId);
+    }
+
+    /**
+     * Transitive dependents of {@code taskId}: every task reachable by following dependency edges in
+     * reverse. An edge {@code (task_id, depends_on_task_id)} means {@code task_id} depends on
+     * {@code depends_on_task_id}; so the direct dependents of a task are the rows whose
+     * {@code depends_on_task_id} equals it, and we recurse on those. Expressed as a recursive CTE
+     * ({@code WITH RECURSIVE dependents(id) AS (seed UNION ALL step)}). Does NOT include
+     * {@code taskId} itself. Edges live within a single workflow instance, so no instance filter is
+     * needed.
+     */
+    private CommonTableExpression<Record1<UUID>> transitiveDependents(UUID taskId) {
+        Field<UUID> dependentId = field(name("dependents", "id"), SQLDataType.UUID);
+        return name("dependents")
+                .fields("id")
+                .as(
+                        select(TD_TASK_ID)
+                                .from(TASK_DEPENDENCIES)
+                                .where(TD_DEPENDS_ON_TASK_ID.eq(taskId))
+                                .unionAll(
+                                        select(TD_TASK_ID)
+                                                .from(TASK_DEPENDENCIES)
+                                                .join(table(name("dependents")))
+                                                .on(TD_DEPENDS_ON_TASK_ID.eq(dependentId))));
+    }
+
+    /**
+     * On dead-letter: cancel every transitive dependent that is still PENDING (a dependent of a
+     * just-failed task can only be PENDING — it was never dispatchable). CANCELLED is terminal, so we
+     * stamp finished_at like {@link #completeTaskFailure}. Siblings are untouched. Returns the ids
+     * actually cancelled so the caller can emit an event per task.
+     */
+    public List<UUID> cancelDependents(UUID taskId, Instant now) {
+        CommonTableExpression<Record1<UUID>> dependents = transitiveDependents(taskId);
+        return db.withRecursive(dependents)
+                .update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.CANCELLED.name())
+                .set(TI_FINISHED_AT, now)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_ID.in(select(field(name("dependents", "id"), SQLDataType.UUID)).from(dependents)))
+                .and(TI_STATUS.eq(TaskStatus.PENDING.name()))
+                .returningResult(TI_ID)
+                .fetch(TI_ID);
+    }
+
+    /**
+     * On redrive of a previously dead-lettered task: restore its transitive dependents that were
+     * CANCELLED back to PENDING (not READY — they re-block until their own dependencies succeed
+     * again), clearing finished_at. Returns the restored ids.
+     */
+    public List<UUID> restoreCancelledDependents(UUID taskId, Instant now) {
+        CommonTableExpression<Record1<UUID>> dependents = transitiveDependents(taskId);
+        return db.withRecursive(dependents)
+                .update(TASK_INSTANCES)
+                .set(TI_STATUS, TaskStatus.PENDING.name())
+                .set(TI_FINISHED_AT, (Instant) null)
+                .set(TI_UPDATED_AT, now)
+                .where(TI_ID.in(select(field(name("dependents", "id"), SQLDataType.UUID)).from(dependents)))
+                .and(TI_STATUS.eq(TaskStatus.CANCELLED.name()))
+                .returningResult(TI_ID)
+                .fetch(TI_ID);
     }
 
     public List<DeadLetterRow> findDeadLetters(int limit) {
@@ -422,6 +579,25 @@ public class WorkflowRepository {
                                         TaskStatus.valueOf(r.get(TI_STATUS)),
                                         r.get(TI_ATTEMPTS),
                                         dataOrNull(r.get(TI_OUTPUT))));
+    }
+
+    /**
+     * The SUCCEEDED sink tasks of an instance with their output JSON. A sink is a task whose id never
+     * appears as a {@code depends_on_task_id} — nothing depends on it, so it is a terminal result of
+     * the DAG (NOT EXISTS anti-join). Ordered by task_key for deterministic aggregate output. Sinks
+     * should all be SUCCEEDED when the workflow succeeds; the status filter guards against anything
+     * else slipping in.
+     */
+    public List<LeafOutput> findSinkOutputs(UUID instanceId) {
+        var isDependedOn =
+                selectOne().from(TASK_DEPENDENCIES).where(TD_DEPENDS_ON_TASK_ID.eq(TI_ID));
+        return db.select(TI_TASK_KEY, TI_OUTPUT)
+                .from(TASK_INSTANCES)
+                .where(TI_WORKFLOW_INSTANCE_ID.eq(instanceId))
+                .and(TI_STATUS.eq(TaskStatus.SUCCEEDED.name()))
+                .andNotExists(isDependedOn)
+                .orderBy(TI_TASK_KEY.asc())
+                .fetch(r -> new LeafOutput(r.get(TI_TASK_KEY), dataOrNull(r.get(TI_OUTPUT))));
     }
 
     public void releaseLease(UUID taskId) {
