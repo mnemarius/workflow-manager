@@ -38,14 +38,14 @@ That is the bar. If a change does not move the project toward this bar (or one o
 
 Each milestone is independently shippable and demoable. Do not skip ahead.
 
-**Current status: M2 complete.** M0 (foundation), M1 (single-task submit + execute) and M2 (retries, timeouts, leases, DLQ — kill a worker mid-task, another picks it up) have shipped; **M3 — DAG support (multi-step workflows with dependencies)** is next.
+**Current status: M3 complete.** M0 (foundation), M1 (single-task submit + execute), M2 (retries, timeouts, leases, DLQ — kill a worker mid-task, another picks it up) and M3 (DAG support — multi-step workflows with `dependsOn` edges, dependency promotion, and downstream cancellation on failure) have shipped; **M4 — durable timers + scheduled workflows (cron)** is next.
 
 | #  | Milestone                                                       | Demo proves…                                                 | Est. effort |
 |----|-----------------------------------------------------------------|--------------------------------------------------------------|-------------|
 | 0  | Project skeleton, CI, Docker Compose, Flyway migrations         | "I have a clean foundation."                                 | 1 week      |
 | 1  | Single-task submit + execute (engine + 1 worker, no retries)    | A submitted task runs end-to-end.                            | 1–2 weeks   |
 | 2  | Retries, timeouts, leases, DLQ                                  | Kill a worker mid-task → another picks it up.                | 1–2 weeks   |
-| 3  | DAG support (multi-step workflows with dependencies)            | Reference demo runs (TBD — picked when M3 starts).           | 2 weeks     |
+| 3  | DAG support (multi-step workflows with dependencies)            | Order-fulfillment diamond: fan-out/fan-in + payment retries. | 2 weeks     |
 | 4  | Durable timers + scheduled workflows (cron)                     | "Drip email" demo runs across days.                          | 1 week      |
 | 5  | Dashboard v1: list workflows, drill into DAG, see logs          | Showable to other engineers.                                 | 2 weeks     |
 | 6  | Live updates via SSE; cancel / retry / replay buttons           | The dashboard feels alive.                                   | 1 week      |
@@ -60,16 +60,24 @@ Each milestone is independently shippable and demoable. Do not skip ahead.
 
 ## Demo customer story
 
-**Deferred until M3.** The M3 reference demo will be picked when M3 actually starts — by then we'll know more about what feels right for the audience and what's cheap to wire up. Until then, M0–M2 use toy tasks (`sleep(1s); echo "did thing"`).
+**Order fulfillment (chosen for M3).** An order moves through a **diamond DAG**:
 
-Whatever demo is picked must:
+```text
+              ┌─► charge-payment ────┐
+   validate ──┤                      ├─► ship ─► notify
+              └─► reserve-inventory ─┘
+```
 
-- Be visually clear in the dashboard (a DAG worth looking at — not a single linear chain).
-- Exercise every primitive present at M3: multi-step DAG, retries, observable progress.
-- Be implementable with Java-native libraries (no Python escape hatch — workers are Java only).
-- Have at least one step that *can* legitimately fail and benefit from retries (so the chaos-test story isn't contrived).
+`validate` fans out to `charge-payment` and `reserve-inventory` (which run in parallel); `ship` fans back in on **both**; `notify` is the sole sink. `charge-payment` is the step that *can* legitimately fail — the sample worker declines it ~40% of the time — so its retry policy (5 attempts, fixed 1s backoff) is exercised on most runs and the workflow still reaches `SUCCEEDED`. The runnable version is [scripts/order-demo.sh](../scripts/order-demo.sh); the handlers live in the sample worker (`worker-sdk`).
 
-Once chosen, new features should be validated by showing how they improve or extend the chosen demo.
+This meets the four requirements for the M3 demo:
+
+- **Visually clear — not a single linear chain.** A diamond with a genuine fan-out and fan-in is a DAG worth looking at in the dashboard (M5).
+- **Exercises every M3 primitive:** multi-step DAG with `dependsOn` edges, retries (flaky payment), and observable progress (task-status progression as it flows).
+- **Java-native.** All five handlers are plain Java in the sample worker — no Python escape hatch.
+- **A step that can legitimately fail** and benefit from retries: `charge-payment`, so the retry/chaos story isn't contrived.
+
+New features should be validated by showing how they improve or extend this demo. Until M3, M0–M2 used toy tasks (`sleep(1s); echo "did thing"`); those handlers remain for the M2 failover demo and `scripts/chaos.sh`.
 
 ## Audience and intent
 

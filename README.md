@@ -7,10 +7,12 @@ their steps, hands work to worker processes over gRPC, tracks state in PostgreSQ
 failures, and exposes a dashboard to observe and control runs. No Kafka, no Redis, no
 Kubernetes — Postgres is the only substrate.
 
-> Status: **M2 — retries, timeouts, leases, DLQ.** Kill a worker mid-task and another picks it
-> up: task leases with heartbeats, a reaper that recovers expired leases, retries with backoff,
-> per-attempt timeouts, and a dead-letter queue with redrive. DAGs, timers and the live
-> dashboard arrive in later milestones (see [docs/BUSINESS.md](docs/BUSINESS.md)).
+> Status: **M3 — multi-step DAGs.** Everything from M2 still holds — kill a worker mid-task and
+> another picks it up: task leases with heartbeats, a reaper that recovers expired leases, retries
+> with backoff, per-attempt timeouts, and a dead-letter queue with redrive — now over workflows
+> that are DAGs: tasks declare `dependsOn` edges, fan out and fan back in, and a failed step
+> cascades cancellation to its dependents (redrive restores them). Timers and the live dashboard
+> arrive in later milestones (see [docs/BUSINESS.md](docs/BUSINESS.md)).
 
 ## Topology
 
@@ -62,9 +64,11 @@ docker compose up --build
 - Dashboard: <http://localhost:5173>
 - Postgres: `localhost:5432` (`workflow` / `workflow`)
 
-The `worker` service runs the sample worker (`echo` and `sleep` handlers) and long-polls the
-engine over gRPC; scale it with `--scale worker=N` — each container's hostname becomes its
-worker id. Flyway applies the schema on engine startup. Tear down with `docker compose down -v`.
+The `worker` service runs the sample worker (`echo` and `sleep` handlers, plus the M3
+order-fulfillment handlers `validate` / `charge-payment` / `reserve-inventory` / `ship` / `notify`)
+and long-polls the engine over gRPC; scale it with `--scale worker=N` — each container's hostname
+becomes its worker id. Flyway applies the schema on engine startup. Tear down with
+`docker compose down -v`.
 
 Submit a single-task workflow and watch it succeed:
 
@@ -123,6 +127,57 @@ workflows while a random worker is killed every ~10s; at the end every workflow 
 
 ```bash
 scripts/chaos.sh 60
+```
+
+## M3 demo: order-fulfillment DAG
+
+The M3 promise: multi-step workflows with dependencies. The reference demo is an order-fulfillment
+**diamond** — `validate` fans out to `charge-payment` and `reserve-inventory`, both fan back into
+`ship`, and `ship` feeds the sole sink `notify`:
+
+```text
+              ┌─► charge-payment ────┐
+   validate ──┤                      ├─► ship ─► notify
+              └─► reserve-inventory ─┘
+```
+
+`charge-payment` is a **legitimately flaky** step: the sample worker fails it ~40% of the time, so
+its `retryPolicy` (5 attempts, fixed 1s backoff) is exercised on most runs and the demo shows a real
+retry story while still reaching `SUCCEEDED`. Bring the stack up and submit the DAG:
+
+```bash
+docker compose up -d --build
+
+curl -s localhost:8080/workflows -H 'content-type: application/json' -d '{
+  "name": "order-fulfillment", "version": 1,
+  "dag": { "tasks": [
+    { "key": "validate", "type": "validate" },
+    { "key": "charge-payment", "type": "charge-payment", "dependsOn": ["validate"],
+      "retryPolicy": { "maxAttempts": 5, "backoffStrategy": "fixed", "initialDelaySeconds": 1 } },
+    { "key": "reserve-inventory", "type": "reserve-inventory", "dependsOn": ["validate"] },
+    { "key": "ship", "type": "ship", "dependsOn": ["charge-payment", "reserve-inventory"] },
+    { "key": "notify", "type": "notify", "dependsOn": ["ship"] }
+  ] }
+}'
+# -> {"instanceId":"..."}
+```
+
+Watch it flow — `charge-payment` climbs through attempts while `reserve-inventory` proceeds in
+parallel, `ship` waits for both, and the workflow output is the keyed aggregate of the sink:
+
+```bash
+curl -s localhost:8080/workflows/<instanceId>
+# tasks progress PENDING -> READY -> RUNNING -> SUCCEEDED; charge-payment shows "attempts">1 on
+# flaky runs. Final: "status":"SUCCEEDED" with "output":{"notify":{"notified":true}}
+```
+
+The automated version is [scripts/order-demo.sh](scripts/order-demo.sh): it submits the diamond,
+polls the workflow, prints the per-task status progression (so the fan-out/fan-in and the payment
+retries are visible), and prints PASS once the workflow is `SUCCEEDED` with the `notify` sink key in
+its output — or FAIL on timeout:
+
+```bash
+scripts/order-demo.sh
 ```
 
 ## Build & test

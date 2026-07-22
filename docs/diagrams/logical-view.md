@@ -53,13 +53,15 @@ flowchart TB
 
 ## Data model
 
-Six tables (see [ARCHITECTURE.md](../ARCHITECTURE.md#data-model) for full column detail and status semantics). Overview only — PKs/FKs and a couple of key fields per table.
+Seven tables (see [ARCHITECTURE.md](../ARCHITECTURE.md#data-model) for full column detail and status semantics). Overview only — PKs/FKs and a couple of key fields per table. `task_dependencies` is the M3 DAG edge table: one row per `dependsOn` edge, both columns FK into `task_instances` (a task waits on another task of the same workflow).
 
 ```mermaid
 erDiagram
     WORKFLOW_DEFINITIONS ||--o{ WORKFLOW_INSTANCES : instantiates
     WORKFLOW_INSTANCES ||--o{ TASK_INSTANCES : contains
     TASK_INSTANCES ||--o| TASK_LEASES : "leased as"
+    TASK_INSTANCES ||--o{ TASK_DEPENDENCIES : "waits on"
+    TASK_INSTANCES ||--o{ TASK_DEPENDENCIES : "blocks"
     WORKFLOW_INSTANCES ||--o{ EVENTS : emits
     TASK_INSTANCES ||--o{ EVENTS : emits
     TASK_INSTANCES ||--o{ OUTBOX : enqueues
@@ -81,6 +83,10 @@ erDiagram
         uuid workflow_instance_id FK
         string status
         int attempts
+    }
+    TASK_DEPENDENCIES {
+        uuid task_id PK "FK to task_instances"
+        uuid depends_on_task_id PK "FK to task_instances"
     }
     TASK_LEASES {
         uuid task_id PK "also FK to task_instances"

@@ -2,7 +2,7 @@
 
 > **Keep in sync:** these diagrams describe the system as built. Whenever you change the architecture, modules, runtime flow, or deployment topology, update the affected view in the same change — do not let them drift.
 
-Runtime behavior as of M2 (single-task submit + execute, retries with backoff, lease heartbeat, crashed-worker recovery, per-attempt timeouts, dead-lettering + redrive).
+Runtime behavior as of M3 (multi-step DAGs on top of the M2 machinery: submit → execute, retries with backoff, lease heartbeat, crashed-worker recovery, per-attempt timeouts, dead-lettering + redrive, and now dependency promotion + failure cascade).
 
 ## Submit → execute happy path
 
@@ -16,7 +16,7 @@ sequenceDiagram
 
     Client->>API: POST /workflows
     API->>DB: INSERT workflow_instances (PENDING)
-    API->>DB: INSERT task_instances (READY)
+    API->>DB: INSERT task_instances (READY if no deps, else PENDING) + task_dependencies edges
     API-->>Client: 201 Created (instance id)
 
     Worker->>GRPC: FetchTask()
@@ -108,6 +108,34 @@ sequenceDiagram
     WB->>GRPC: CompleteTask(success)
 ```
 
+## DAG: promotion on success, cascade on failure
+
+M3 makes a workflow a DAG. Tasks with `dependsOn` edges start `PENDING`; when a task succeeds, the completion transaction promotes every `PENDING` task in the workflow whose dependencies are now **all** `SUCCEEDED` to `READY` (event `TASK_READY`) — no sweeper (ADR 0010). Sibling completions that share a fan-in child are serialized by a blocking, id-ordered `FOR UPDATE` on the workflow's `PENDING` set (not `SKIP LOCKED`), so the join task is never orphaned. When a task instead **dead-letters**, its transitive dependents (recursive CTE) are cancelled `PENDING → CANCELLED` and the workflow fails; DLQ redrive restores them `CANCELLED → PENDING`. On workflow success the output is the keyed aggregate of the **sink** tasks (those nothing depends on): `{ "<taskKey>": <output>, … }`.
+
+```mermaid
+sequenceDiagram
+    participant Worker
+    participant GRPC as Engine gRPC service
+    participant DB as PostgreSQL
+
+    Worker->>GRPC: CompleteTask(success) for task T
+    GRPC->>DB: verify lease ownership; T -> SUCCEEDED
+    GRPC->>DB: SELECT this workflow's PENDING tasks FOR UPDATE (ordered by id, blocking)
+    GRPC->>DB: promote PENDING tasks whose deps are ALL SUCCEEDED -> READY; append TASK_READY
+    alt open tasks remain
+        GRPC-->>Worker: ack (workflow still RUNNING; promoted tasks now claimable)
+    else all tasks terminal, none FAILED
+        GRPC->>DB: instance -> SUCCEEDED, output = { sinkKey: output, ... }
+        GRPC-->>Worker: ack
+    end
+
+    Note over Worker,DB: on the failure path instead: when T dead-letters (retries exhausted)
+    Worker->>GRPC: CompleteTask(failure), budget spent
+    GRPC->>DB: T -> FAILED; cancel transitive dependents PENDING -> CANCELLED (recursive CTE)
+    GRPC->>DB: append TASK_CANCELLED per dependent; instance -> FAILED
+    Note over Worker,DB: POST /dead-letters/{T}/retry later restores dependents CANCELLED -> PENDING (ADR 0009/0010)
+```
+
 ## The gRPC long-poll mechanic
 
 `FetchTask` is a long-lived call: the engine parks it on a virtual thread and polls the queue instead of returning immediately empty-handed.
@@ -139,14 +167,14 @@ sequenceDiagram
 
 ## Task status lifecycle
 
-`PENDING → READY → RUNNING → SUCCEEDED` is the happy path. M2 adds the failure loop `RUNNING → RETRY_SCHEDULED → RUNNING`, the terminal `FAILED` when the retry budget runs out, and redrive as the one sanctioned `FAILED → READY` transition (ADR 0009).
+`PENDING → READY → RUNNING → SUCCEEDED` is the happy path. M2 adds the failure loop `RUNNING → RETRY_SCHEDULED → RUNNING`, the terminal `FAILED` when the retry budget runs out, and redrive as the one sanctioned `FAILED → READY` transition (ADR 0009). M3 makes `PENDING` and `CANCELLED` live: a task with `dependsOn` edges starts `PENDING` and is promoted `PENDING → READY` when its deps all succeed; a dead-lettered task cascades its dependents `PENDING → CANCELLED`, and redrive restores them `CANCELLED → PENDING` (ADR 0010).
 
 | Status            | When it appears                                                                          |
 |-------------------|------------------------------------------------------------------------------------------|
-| `PENDING`         | Waiting on DAG dependencies (not exercised yet — still single-task).                     |
+| `PENDING`         | Waiting on DAG dependencies (M3). Not claimable; promoted to `READY` when all deps `SUCCEEDED`. |
 | `READY`           | Eligible to be leased by a worker on the next `FetchTask` poll.                          |
 | `RUNNING`         | Leased by a worker; a `task_leases` row holds the lease.                                 |
-| `SUCCEEDED`       | Worker reported success. Terminal.                                                       |
+| `SUCCEEDED`       | Worker reported success. Terminal. Promotes dependents whose deps are now all met.        |
 | `FAILED`          | Retries exhausted — the dead-letter queue; redrive resets it to `READY` (ADR 0009).      |
 | `RETRY_SCHEDULED` | Retry pending — worker failure or timeout (backoff), lease expiry (no backoff); ADRs 0006–0008. |
-| `CANCELLED`       | Externally cancelled. **Arrives with M6.**                                               |
+| `CANCELLED`       | Terminal. Cascade-cancelled dependent of a dead-lettered task (M3); redrive restores it to `PENDING` (ADR 0010). External cancellation later. |

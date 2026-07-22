@@ -14,5 +14,5 @@ Three views, each answering a different question about the same system (a lightw
 
 - Diagrams are **Mermaid**, rendered inline by GitHub and most markdown viewers — no images to regenerate.
 - No hardcoded colors; default Mermaid theming so diagrams stay readable in light and dark mode.
-- Each view is scoped to the current milestone ([BUSINESS.md](../BUSINESS.md), M2: retries, timeouts, leases, DLQ). Multi-step DAGs, durable timers, and multi-engine scaling arrive in later milestones and should be added here when they land.
+- Each view is scoped to the current milestone ([BUSINESS.md](../BUSINESS.md), M3: multi-step DAGs — dependency promotion and failure cascade — on top of the M2 retries, timeouts, leases, and DLQ). Durable timers and multi-engine scaling arrive in later milestones and should be added here when they land.
 - Full prose detail (tech stack, decisions A–H, tables) lives in [ARCHITECTURE.md](../ARCHITECTURE.md); these diagrams are a visual index into it, not a replacement.

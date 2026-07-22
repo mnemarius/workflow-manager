@@ -44,7 +44,10 @@ scope rules). Nothing here is a commitment.
 - **Transactional outbox drain on recovery.** Decision G item 3: no `outbox` producer exists
   yet, so the reaper's startup pass has nothing to drain. When side effects start flowing
   through the outbox, add the drain to the recovery pass.
-- Multi-step DAG dependencies and richer capability matching (M3).
+- **Richer capability matching.** M3 shipped multi-step DAG dependencies, but capability
+  matching is still exact task-type equality: a worker fetches tasks whose `type` is in its
+  handler-map keys. Later, workers could advertise structured capabilities (versions, resource
+  tags, weighted preferences) and the claim query match on those rather than a bare `type IN (...)`.
 - API-key auth on the REST and gRPC surfaces (ARCHITECTURE §Security).
 - Trace-context propagation engine ↔ worker over gRPC metadata (M8).
 - **Database connection pooling tuning.** Spring Boot already ships HikariCP as the default pool
