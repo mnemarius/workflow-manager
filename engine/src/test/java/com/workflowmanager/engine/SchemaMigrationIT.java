@@ -25,14 +25,16 @@ class SchemaMigrationIT {
     DSLContext db;
 
     @Test
-    void flyway_onStartup_createsAllSixTables() {
+    void flyway_onStartup_createsEveryTable() {
         var tables = db.meta().getTables().stream().map(t -> t.getName()).toList();
 
         assertThat(tables).contains(
                 "workflow_definitions",
                 "workflow_instances",
                 "task_instances",
+                "task_dependencies",
                 "task_leases",
+                "workflow_schedules",
                 "events",
                 "outbox");
     }

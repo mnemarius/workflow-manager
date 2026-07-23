@@ -25,6 +25,7 @@ final class Schema {
     static final Table<?> TASK_LEASES = table(name("task_leases"));
     static final Table<?> TASK_DEPENDENCIES = table(name("task_dependencies"));
     static final Table<?> EVENTS = table(name("events"));
+    static final Table<?> WORKFLOW_SCHEDULES = table(name("workflow_schedules"));
 
     // workflow_definitions
     static final Field<UUID> DEF_ID = field(name("id"), SQLDataType.UUID);
@@ -41,6 +42,8 @@ final class Schema {
     static final Field<Instant> WI_STARTED_AT = field(name("started_at"), SQLDataType.INSTANT);
     static final Field<Instant> WI_FINISHED_AT = field(name("finished_at"), SQLDataType.INSTANT);
     static final Field<Instant> WI_UPDATED_AT = field(name("updated_at"), SQLDataType.INSTANT);
+    static final Field<UUID> WI_SCHEDULE_ID = field(name("schedule_id"), SQLDataType.UUID);
+    static final Field<Instant> WI_FIRED_FOR = field(name("fired_for"), SQLDataType.INSTANT);
 
     // task_instances
     static final Field<UUID> TI_ID = field(name("id"), SQLDataType.UUID);
@@ -76,6 +79,22 @@ final class Schema {
     static final Field<UUID> TD_TASK_ID = field(name("task_id"), SQLDataType.UUID);
     static final Field<UUID> TD_DEPENDS_ON_TASK_ID =
             field(name("depends_on_task_id"), SQLDataType.UUID);
+
+    // workflow_schedules
+    static final Field<UUID> WS_ID = field(name("id"), SQLDataType.UUID);
+    static final Field<String> WS_NAME = field(name("name"), SQLDataType.VARCHAR);
+    static final Field<String> WS_WORKFLOW_NAME = field(name("workflow_name"), SQLDataType.VARCHAR);
+    static final Field<Integer> WS_WORKFLOW_VERSION =
+            field(name("workflow_version"), SQLDataType.INTEGER);
+    static final Field<JSONB> WS_DAG = field(name("dag"), SQLDataType.JSONB);
+    static final Field<JSONB> WS_INPUT = field(name("input"), SQLDataType.JSONB);
+    static final Field<String> WS_CRON_EXPRESSION =
+            field(name("cron_expression"), SQLDataType.VARCHAR);
+    static final Field<String> WS_TIMEZONE = field(name("timezone"), SQLDataType.VARCHAR);
+    static final Field<Instant> WS_NEXT_FIRE_AT = field(name("next_fire_at"), SQLDataType.INSTANT);
+    static final Field<Instant> WS_LAST_FIRED_AT = field(name("last_fired_at"), SQLDataType.INSTANT);
+    static final Field<Boolean> WS_PAUSED = field(name("paused"), SQLDataType.BOOLEAN);
+    static final Field<Instant> WS_UPDATED_AT = field(name("updated_at"), SQLDataType.INSTANT);
 
     // events
     static final Field<UUID> EV_WORKFLOW_INSTANCE_ID =

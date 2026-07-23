@@ -103,11 +103,22 @@ public class WorkflowRepository {
     }
 
     public UUID insertInstance(UUID definitionId, String inputJson, Instant now) {
+        return insertInstance(definitionId, inputJson, now, null, null);
+    }
+
+    /**
+     * {@code scheduleId} and {@code firedFor} are set only for cron-triggered runs (ADR 0011);
+     * their unique index is what stops one nominal fire being submitted twice.
+     */
+    public UUID insertInstance(
+            UUID definitionId, String inputJson, Instant now, UUID scheduleId, Instant firedFor) {
         return db.insertInto(WORKFLOW_INSTANCES)
                 .set(WI_DEFINITION_ID, definitionId)
                 .set(WI_STATUS, WorkflowStatus.PENDING.name())
                 .set(WI_INPUT, jsonbOrNull(inputJson))
                 .set(WI_UPDATED_AT, now)
+                .set(WI_SCHEDULE_ID, scheduleId)
+                .set(WI_FIRED_FOR, firedFor)
                 .returningResult(WI_ID)
                 .fetchOne()
                 .value1();
