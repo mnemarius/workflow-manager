@@ -35,11 +35,21 @@ public class WorkflowSubmissionService {
 
     @Transactional
     public UUID submit(String name, int version, JsonNode dag, JsonNode input) {
+        return submit(name, version, dag, input, null, null);
+    }
+
+    /**
+     * {@code scheduleId} and {@code firedFor} mark a cron-triggered run (ADR 0011); the unique
+     * index over the pair means a duplicate fire fails here rather than starting a second run.
+     */
+    @Transactional
+    public UUID submit(
+            String name, int version, JsonNode dag, JsonNode input, UUID scheduleId, Instant firedFor) {
         Instant now = clock.instant();
         String inputJson = (input == null || input.isNull()) ? null : input.toString();
 
         UUID definitionId = repo.upsertDefinition(name, version, dag.toString());
-        UUID instanceId = repo.insertInstance(definitionId, inputJson, now);
+        UUID instanceId = repo.insertInstance(definitionId, inputJson, now, scheduleId, firedFor);
 
         MDC.put("workflow_id", instanceId.toString());
         try {
@@ -48,8 +58,14 @@ public class WorkflowSubmissionService {
             // Pass 1: insert every task (READY when it has no deps, else PENDING) and remember its id.
             Map<String, UUID> taskIdsByKey = new HashMap<>();
             for (PlannedTask task : plannedTasks) {
-                TaskStatus status =
-                        task.dependsOn().isEmpty() ? TaskStatus.READY : TaskStatus.PENDING;
+                boolean isRoot = task.dependsOn().isEmpty();
+                TaskStatus status = isRoot ? TaskStatus.READY : TaskStatus.PENDING;
+                // A root task is READY at submit, so its delay runs from now; a dependent task's
+                // delay runs from promotion instead and is applied there (ADR 0011).
+                Instant scheduledAt =
+                        (isRoot && task.delaySeconds() != null)
+                                ? now.plusSeconds(task.delaySeconds())
+                                : now;
                 UUID taskId =
                         repo.insertTask(
                                 status,
@@ -60,7 +76,8 @@ public class WorkflowSubmissionService {
                                 task.retryPolicy().maxAttempts(),
                                 task.retryPolicy().toJson(),
                                 task.timeoutSeconds(),
-                                now,
+                                task.delaySeconds(),
+                                scheduledAt,
                                 now);
                 taskIdsByKey.put(task.key(), taskId);
             }

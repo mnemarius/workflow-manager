@@ -56,7 +56,8 @@ The repository contains three artifacts:
                               │  │  - DAG resolution       │     │
                               │  │  - State transitions    │     │
                               │  │  - Retry policy         │     │
-                              │  │  - Timer wheel          │     │
+                              │  │  - Lease reaper         │     │
+                              │  │  - Cron sweeper         │     │
                               │  └────────────┬────────────┘     │
                               │               │                  │
                               │               ▼                  │
@@ -92,15 +93,16 @@ These are lenses, not a checklist. For every task, interpret what each attribute
 
 ## Data model
 
-Seven tables. Get these right and the rest follows.
+Eight tables. Get these right and the rest follows.
 
 | Table                  | Purpose                                                                                              |
 |------------------------|------------------------------------------------------------------------------------------------------|
 | `workflow_definitions` | Versioned DAG templates. `(id, name, version, dag JSONB, created_at)`.                               |
-| `workflow_instances`   | One row per submitted workflow run. `(id, definition_id, status, input JSONB, output JSONB, …)`.     |
-| `task_instances`       | One row per step in a workflow run. Status, attempts, per-attempt timeout, failure metadata (`failure_reason`, `last_error`), scheduled/started/finished timestamps. |
+| `workflow_instances`   | One row per submitted workflow run. `(id, definition_id, status, input JSONB, output JSONB, …)`. Cron-triggered runs also carry `(schedule_id, fired_for)`, uniquely indexed (ADR 0011). |
+| `task_instances`       | One row per step in a workflow run. Status, attempts, per-attempt timeout, `delay_seconds`, failure metadata (`failure_reason`, `last_error`), scheduled/started/finished timestamps. |
 | `task_dependencies`    | DAG edges (M3, [V5](../engine/src/main/resources/db/migration/V5__task_dependencies.sql)). `(task_id, depends_on_task_id)` — one row per edge: `task_id` waits on `depends_on_task_id`. Indexed on `depends_on_task_id` for the reverse lookup (ADR 0010). |
 | `task_leases`          | Currently-held tasks. `(task_id, worker_id, lease_expires_at)` — drives crashed-worker recovery.     |
+| `workflow_schedules`   | Cron schedules (M4, [V7](../engine/src/main/resources/db/migration/V7__workflow_schedules.sql)). DAG, cron expression, timezone, `next_fire_at`, `last_fired_at`, `paused` — swept by `ScheduleSweeper` (ADR 0011). |
 | `events`               | Append-only log of every state transition. Audit trail, debug log, replay source.                    |
 | `outbox`               | Pending side effects (task enqueue, external notifications). Drained transactionally.                |
 
@@ -156,7 +158,13 @@ FOR UPDATE SKIP LOCKED
 LIMIT N;
 ```
 
-A "sleep 3 days" step is just a task with `scheduled_at = now() + 3 days` and a no-op handler. Retries reuse the same mechanism: a due `RETRY_SCHEDULED` row is claimed directly, no promotion sweeper (ADR 0006). Cron / scheduled workflows will reuse it too.
+**Readiness and claimability are different things**, and `delaySeconds` on a task is what exposes that to the DAG author (M4, ADR 0011): the task is promoted to `READY` normally, but its `scheduled_at` is offset so it is not claimable until the delay elapses. A "sleep 3 days" step is therefore not a task at all — it is `delaySeconds: 259200` on the step that follows the wait, costing no handler and no worker round-trip. The delay is anchored at **readiness**: submit for a root task, promotion for a dependent one, so "three days after the previous step finished" is expressible. Retries reuse the same column but not the delay: a due `RETRY_SCHEDULED` row is claimed directly on its backoff, no promotion sweeper (ADR 0006).
+
+### D2. Scheduled workflows (cron)
+
+A workflow can start without anyone submitting it. `workflow_schedules` holds the DAG, a cron expression, its timezone and `next_fire_at`; `ScheduleSweeper` claims due rows `FOR UPDATE SKIP LOCKED`, submits the run and advances `next_fire_at` in **one transaction**, so a crash mid-sweep leaves the schedule due rather than losing or duplicating the fire. It mirrors the lease reaper, startup pass included. Expressions are Spring's six-field form (seconds first), evaluated in the schedule's own zone so a 09:00 daily schedule stays at 09:00 local across DST.
+
+**Missed fires skip to the latest slot.** A schedule due after an outage fires once, for the most recent missed slot, resumes on the normal grid, and records how many slots it dropped — an engine down six hours with a ten-minute schedule submits one run, not thirty-six (ADR 0011). Each run is tagged with `(schedule_id, fired_for)`, uniquely indexed, which is the durable guard against a slot firing twice and is what lets the sweeper stay correct unchanged under M7's multiple engines.
 
 ### E. Worker → engine protocol
 

@@ -7,12 +7,13 @@ their steps, hands work to worker processes over gRPC, tracks state in PostgreSQ
 failures, and exposes a dashboard to observe and control runs. No Kafka, no Redis, no
 Kubernetes — Postgres is the only substrate.
 
-> Status: **M3 — multi-step DAGs.** Everything from M2 still holds — kill a worker mid-task and
-> another picks it up: task leases with heartbeats, a reaper that recovers expired leases, retries
-> with backoff, per-attempt timeouts, and a dead-letter queue with redrive — now over workflows
-> that are DAGs: tasks declare `dependsOn` edges, fan out and fan back in, and a failed step
-> cascades cancellation to its dependents (redrive restores them). Timers and the live dashboard
-> arrive in later milestones (see [docs/BUSINESS.md](docs/BUSINESS.md)).
+> Status: **M4 — durable timers and cron schedules.** Everything from M2 and M3 still holds — kill
+> a worker mid-task and another picks it up (leases, heartbeats, a reaper, retries with backoff,
+> per-attempt timeouts, a dead-letter queue with redrive), over workflows that are DAGs with
+> `dependsOn` edges, fan-out/fan-in and failure cascade. M4 adds time: any task can declare
+> `delaySeconds` and wait without a worker holding it, and a workflow can start on a cron
+> expression instead of being submitted. The live dashboard arrives next (see
+> [docs/BUSINESS.md](docs/BUSINESS.md)).
 
 ## Topology
 
@@ -64,8 +65,9 @@ docker compose up --build
 - Dashboard: <http://localhost:5173>
 - Postgres: `localhost:5432` (`workflow` / `workflow`)
 
-The `worker` service runs the sample worker (`echo` and `sleep` handlers, plus the M3
-order-fulfillment handlers `validate` / `charge-payment` / `reserve-inventory` / `ship` / `notify`)
+The `worker` service runs the sample worker (`echo` and `sleep` handlers, the M3 order-fulfillment
+handlers `validate` / `charge-payment` / `reserve-inventory` / `ship` / `notify`, and the M4
+drip-email handlers `send-welcome` / `send-tips` / `send-offer`)
 and long-polls the engine over gRPC; scale it with `--scale worker=N` — each container's hostname
 becomes its worker id. Flyway applies the schema on engine startup. Tear down with
 `docker compose down -v`.
@@ -178,6 +180,41 @@ its output — or FAIL on timeout:
 
 ```bash
 scripts/order-demo.sh
+```
+
+## M4 demo: drip email on a schedule
+
+The M4 promise: a step can wait without a worker holding it, and a workflow can start on its own.
+The reference demo is a three-send drip sequence whose steps are separated by `delaySeconds` rather
+than by work, registered as a cron schedule instead of submitted:
+
+```bash
+curl -X POST localhost:8080/schedules -H 'content-type: application/json' -d '{
+  "name": "drip-email", "workflowName": "drip-email", "workflowVersion": 1,
+  "cronExpression": "0 0 9 * * *", "timezone": "Europe/Oslo",
+  "dag": { "tasks": [
+    { "key": "welcome", "type": "send-welcome" },
+    { "key": "tips",  "type": "send-tips",  "dependsOn": ["welcome"], "delaySeconds": 259200 },
+    { "key": "offer", "type": "send-offer", "dependsOn": ["tips"],    "delaySeconds": 259200 }
+  ] }
+}'
+```
+
+Cron expressions are Spring's six-field form (seconds first) and are evaluated in the schedule's own
+timezone, so `0 0 9 * * *` stays at 09:00 local across DST. `delaySeconds` is measured from when the
+step became ready — three days *after the previous send*, not after submit — and the wait lives in
+Postgres, so nothing is lost if the engine restarts mid-drip. A schedule that comes due after an
+outage fires once for the latest missed slot rather than replaying the backlog (ADR 0011).
+
+Inspect and control schedules with `GET /schedules`, `GET /schedules/{id}/runs`,
+`PATCH /schedules/{id}?paused=true` and `DELETE /schedules/{id}`.
+
+The automated version is [scripts/drip-demo.sh](scripts/drip-demo.sh): it registers a schedule,
+waits for the engine to fire it with nothing submitted by hand, then watches the sends unfold. It
+compresses the day-scale waits to seconds so the run is watchable:
+
+```bash
+scripts/drip-demo.sh
 ```
 
 ## Build & test

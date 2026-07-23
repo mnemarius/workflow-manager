@@ -23,6 +23,7 @@ grpc:
 engine:
   lease-duration: ${ENGINE_LEASE_DURATION:30s}
   reaper-interval: ${ENGINE_REAPER_INTERVAL:5s}
+  schedule-sweep-interval: ${ENGINE_SCHEDULE_SWEEP_INTERVAL:5s}
 
 management:
   endpoints:

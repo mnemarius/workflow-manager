@@ -2,3 +2,8 @@
 grpc:
   server:
     port: 0
+
+engine:
+  # Schedule tests drive the sweeper with an explicit Instant; a background sweep would fire
+  # schedules underneath those assertions, so push the periodic one out of the way.
+  schedule-sweep-interval: 1h
