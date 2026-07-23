@@ -6,6 +6,7 @@ import com.workflowmanager.engine.orchestrator.CronPolicy;
 import com.workflowmanager.engine.orchestrator.DagStructureValidator;
 import com.workflowmanager.engine.persistence.ScheduleRepository;
 import com.workflowmanager.engine.persistence.ScheduleRepository.ScheduleRow;
+import com.workflowmanager.engine.persistence.ScheduleRepository.ScheduleRun;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -107,6 +108,13 @@ public class ScheduleController {
     @GetMapping("/{id}")
     public ScheduleResponse getOne(@PathVariable UUID id) {
         return toResponse(get(id));
+    }
+
+    /** The runs this schedule has started, newest fire first. */
+    @GetMapping("/{id}/runs")
+    public List<ScheduleRun> runs(@PathVariable UUID id, @RequestParam(defaultValue = "20") int limit) {
+        get(id);
+        return schedules.findRuns(id, limit);
     }
 
     /**

@@ -87,6 +87,22 @@ class ScheduleApiIT {
     }
 
     @Test
+    void runs_listsWhatTheScheduleStarted() {
+        String name = "runs-" + UUID.randomUUID();
+        UUID scheduleId = UUID.fromString(createSchedule(name, EVERY_TEN_MINUTES, "UTC").get("id").asText());
+        Instant firstFire = nextFireAt(scheduleId);
+
+        assertThat(rest.getForObject("/schedules/" + scheduleId + "/runs", JsonNode.class)).isEmpty();
+
+        sweeper.sweep(firstFire);
+
+        JsonNode runs = rest.getForObject("/schedules/" + scheduleId + "/runs", JsonNode.class);
+        assertThat(runs).hasSize(1);
+        assertThat(Instant.parse(runs.get(0).get("firedFor").asText())).isEqualTo(firstFire);
+        assertThat(runs.get(0).get("workflowInstanceId").asText()).isNotBlank();
+    }
+
+    @Test
     void sweep_repeatedAtSameInstant_firesOnlyOnce() {
         String name = "once-" + UUID.randomUUID();
         UUID scheduleId = UUID.fromString(createSchedule(name, EVERY_TEN_MINUTES, "UTC").get("id").asText());

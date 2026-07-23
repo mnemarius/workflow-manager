@@ -24,6 +24,11 @@ import java.util.regex.Pattern;
  *   <li>{@code notify} — the sole sink, {@code {"notified":true}}.
  * </ul>
  *
+ * <p>Plus the M4 drip-email handlers, which a cron schedule fires on an interval and whose steps
+ * are separated by {@code delaySeconds} rather than by work: {@code send-welcome},
+ * {@code send-tips} and {@code send-offer}. Each is a plain send — the waiting between them is the
+ * engine's job, not the worker's, which is the whole point of durable timers.
+ *
  * One worker registers every handler; its capabilities auto-derive from the handler-map keys, so a
  * single {@code worker} container (scale it freely) can run every task type. Entry point for the
  * {@code worker} docker-compose service.
@@ -68,7 +73,10 @@ public final class SampleWorker {
                                 "charge-payment", chargePaymentHandler(),
                                 "reserve-inventory", reserveInventoryHandler(),
                                 "ship", shipHandler(),
-                                "notify", notifyHandler()));
+                                "notify", notifyHandler(),
+                                "send-welcome", emailHandler("welcome"),
+                                "send-tips", emailHandler("tips"),
+                                "send-offer", emailHandler("offer")));
         Runtime.getRuntime().addShutdownHook(new Thread(runtime::close));
         runtime.start();
         Thread.currentThread().join();
@@ -120,6 +128,20 @@ public final class SampleWorker {
         return input -> {
             sleep(Duration.ofMillis(500));
             return "{\"notified\":true}";
+        };
+    }
+
+    // --- Drip-email handlers (M4 reference demo) -------------------------------------------------
+
+    /**
+     * One send in a drip sequence. Deliberately trivial: the interesting part of the demo is that
+     * the engine held the step for {@code delaySeconds} before dispatching it, across engine
+     * restarts, without the worker sleeping on a lease.
+     */
+    private static TaskHandler emailHandler(String stage) {
+        return input -> {
+            sleep(Duration.ofMillis(300));
+            return "{\"sent\":\"" + stage + "\"}";
         };
     }
 

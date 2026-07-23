@@ -28,6 +28,8 @@ public class ScheduleRepository {
             Instant lastFiredAt,
             boolean paused) {}
 
+    public record ScheduleRun(UUID workflowInstanceId, String status, Instant firedFor) {}
+
     private final DSLContext db;
 
     public ScheduleRepository(DSLContext db) {
@@ -85,6 +87,19 @@ public class ScheduleRepository {
                 .forUpdate()
                 .skipLocked()
                 .fetch(ScheduleRepository::toRow);
+    }
+
+    /** The runs a schedule has started, newest fire first. */
+    public List<ScheduleRun> findRuns(UUID scheduleId, int limit) {
+        return db.select(WI_ID, WI_STATUS, WI_FIRED_FOR)
+                .from(WORKFLOW_INSTANCES)
+                .where(WI_SCHEDULE_ID.eq(scheduleId))
+                .orderBy(WI_FIRED_FOR.desc())
+                .limit(limit)
+                .fetch(
+                        r ->
+                                new ScheduleRun(
+                                        r.get(WI_ID), r.get(WI_STATUS), r.get(WI_FIRED_FOR)));
     }
 
     public void advance(UUID scheduleId, Instant nextFireAt, Instant lastFiredAt, Instant now) {
