@@ -7,6 +7,7 @@ import com.workflowmanager.engine.application.ScheduleSweeper;
 import java.time.Instant;
 import java.util.UUID;
 import org.jooq.DSLContext;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -42,6 +43,16 @@ class ScheduleApiIT {
 
     private static final String EVERY_TEN_MINUTES = "0 */10 * * * *";
 
+    /**
+     * A sweep fires every due schedule, which is right in production and ruinous in a shared test
+     * database — one test's sweep would otherwise fire every other test's schedule. Parking the
+     * schedules left behind by earlier methods leaves each test alone with the one it creates.
+     */
+    @BeforeEach
+    void parkSchedulesFromEarlierTests() {
+        db.execute("update workflow_schedules set paused = true");
+    }
+
     @Test
     void create_returnsScheduleWithNextFireTime() {
         JsonNode created = createSchedule("drip-" + UUID.randomUUID(), EVERY_TEN_MINUTES, "UTC");
@@ -49,7 +60,8 @@ class ScheduleApiIT {
         assertThat(created.get("cronExpression").asText()).isEqualTo(EVERY_TEN_MINUTES);
         assertThat(created.get("timezone").asText()).isEqualTo("UTC");
         assertThat(created.get("paused").asBoolean()).isFalse();
-        assertThat(created.get("lastFiredAt").isNull()).isTrue();
+        // The API omits null fields, so a never-fired schedule has no lastFiredAt at all.
+        assertThat(created.has("lastFiredAt")).isFalse();
         assertThat(Instant.parse(created.get("nextFireAt").asText())).isAfter(Instant.now());
     }
 
