@@ -59,6 +59,8 @@ final class Schema {
     static final Field<JSONB> TI_LAST_ERROR = field(name("last_error"), SQLDataType.JSONB);
     static final Field<JSONB> TI_INPUT = field(name("input"), SQLDataType.JSONB);
     static final Field<JSONB> TI_OUTPUT = field(name("output"), SQLDataType.JSONB);
+    static final Field<Integer> TI_DELAY_SECONDS =
+            field(name("delay_seconds"), SQLDataType.INTEGER);
     static final Field<Instant> TI_SCHEDULED_AT = field(name("scheduled_at"), SQLDataType.INSTANT);
     static final Field<Instant> TI_STARTED_AT = field(name("started_at"), SQLDataType.INSTANT);
     static final Field<Instant> TI_FINISHED_AT = field(name("finished_at"), SQLDataType.INSTANT);

@@ -58,6 +58,20 @@ class DagPlannerTest {
     }
 
     @Test
+    void plan_taskWithoutDelay_hasNullDelaySeconds() {
+        var dag = parse("{\"tasks\":[{\"key\":\"step1\"}]}");
+        var tasks = planner.plan(dag, null);
+        assertThat(tasks.get(0).delaySeconds()).isNull();
+    }
+
+    @Test
+    void plan_taskWithDelay_parsesDelaySeconds() {
+        var dag = parse("{\"tasks\":[{\"key\":\"wait\",\"delaySeconds\":86400}]}");
+        var tasks = planner.plan(dag, null);
+        assertThat(tasks.get(0).delaySeconds()).isEqualTo(86400);
+    }
+
+    @Test
     void plan_taskWithRetryPolicy_parsesPolicy() {
         var dag =
                 parse(

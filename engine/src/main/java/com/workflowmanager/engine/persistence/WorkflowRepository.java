@@ -6,6 +6,7 @@ import static org.jooq.impl.DSL.name;
 import static org.jooq.impl.DSL.select;
 import static org.jooq.impl.DSL.selectOne;
 import static org.jooq.impl.DSL.table;
+import static org.jooq.impl.DSL.val;
 
 import com.workflowmanager.engine.domain.EventType;
 import com.workflowmanager.engine.domain.FailureReason;
@@ -131,6 +132,7 @@ public class WorkflowRepository {
                 maxAttempts,
                 retryPolicyJson,
                 timeoutSeconds,
+                null,
                 scheduledAt,
                 now);
     }
@@ -148,6 +150,7 @@ public class WorkflowRepository {
             int maxAttempts,
             String retryPolicyJson,
             Integer timeoutSeconds,
+            Integer delaySeconds,
             Instant scheduledAt,
             Instant now) {
         return db.insertInto(TASK_INSTANCES)
@@ -157,6 +160,7 @@ public class WorkflowRepository {
                 .set(TI_STATUS, status.name())
                 .set(TI_MAX_ATTEMPTS, maxAttempts)
                 .set(TI_TIMEOUT_SECONDS, timeoutSeconds)
+                .set(TI_DELAY_SECONDS, delaySeconds)
                 .set(TI_RETRY_POLICY, jsonbOrNull(retryPolicyJson))
                 .set(TI_INPUT, jsonbOrNull(inputJson))
                 .set(TI_SCHEDULED_AT, scheduledAt)
@@ -354,9 +358,16 @@ public class WorkflowRepository {
                         .where(TD_TASK_ID.eq(pendingTaskId))
                         .and(upstreamStatus.ne(TaskStatus.SUCCEEDED.name()));
 
+        // A delayed task is promoted like any other, but is not claimable until its delay
+        // has elapsed from this moment — the delay is measured from readiness (ADR 0011).
+        Field<Instant> readyAt =
+                field(
+                        "{0} + make_interval(secs => coalesce({1}, 0))",
+                        SQLDataType.INSTANT, val(now), TI_DELAY_SECONDS);
+
         return db.update(TASK_INSTANCES)
                 .set(TI_STATUS, TaskStatus.READY.name())
-                .set(TI_SCHEDULED_AT, now)
+                .set(TI_SCHEDULED_AT, readyAt)
                 .set(TI_UPDATED_AT, now)
                 .where(TI_WORKFLOW_INSTANCE_ID.eq(workflowInstanceId))
                 .and(TI_STATUS.eq(TaskStatus.PENDING.name()))
