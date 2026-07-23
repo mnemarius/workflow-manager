@@ -38,7 +38,7 @@ That is the bar. If a change does not move the project toward this bar (or one o
 
 Each milestone is independently shippable and demoable. Do not skip ahead.
 
-**Current status: M3 complete.** M0 (foundation), M1 (single-task submit + execute), M2 (retries, timeouts, leases, DLQ — kill a worker mid-task, another picks it up) and M3 (DAG support — multi-step workflows with `dependsOn` edges, dependency promotion, and downstream cancellation on failure) have shipped; **M4 — durable timers + scheduled workflows (cron)** is next.
+**Current status: M4 complete.** M0 (foundation), M1 (single-task submit + execute), M2 (retries, timeouts, leases, DLQ — kill a worker mid-task, another picks it up), M3 (DAG support — multi-step workflows with `dependsOn` edges, dependency promotion, and downstream cancellation on failure) and M4 (durable timers + cron schedules — `delaySeconds` on any task, plus workflows that start on a cron expression without being submitted) have shipped; **M5 — dashboard v1** is next.
 
 | #  | Milestone                                                       | Demo proves…                                                 | Est. effort |
 |----|-----------------------------------------------------------------|--------------------------------------------------------------|-------------|
@@ -77,7 +77,9 @@ This meets the four requirements for the M3 demo:
 - **Java-native.** All five handlers are plain Java in the sample worker — no Python escape hatch.
 - **A step that can legitimately fail** and benefit from retries: `charge-payment`, so the retry/chaos story isn't contrived.
 
-New features should be validated by showing how they improve or extend this demo. Until M3, M0–M2 used toy tasks (`sleep(1s); echo "did thing"`); those handlers remain for the M2 failover demo and `scripts/chaos.sh`.
+**Drip email (added for M4).** A three-send sequence — `welcome`, then `tips`, then `offer` — where the steps are separated by `delaySeconds` rather than by work, and the whole chain is started by a cron schedule rather than submitted by hand. It proves the two things M4 adds that the order diamond cannot show: a step can wait days without a worker holding a lease, and a workflow can start on its own. The runnable version is [scripts/drip-demo.sh](../scripts/drip-demo.sh), which compresses production's day-scale waits to seconds so the mechanism is watchable; the handlers live in the sample worker.
+
+New features should be validated by showing how they improve or extend these demos. Until M3, M0–M2 used toy tasks (`sleep(1s); echo "did thing"`); those handlers remain for the M2 failover demo and `scripts/chaos.sh`.
 
 ## Audience and intent
 

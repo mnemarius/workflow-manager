@@ -2,7 +2,7 @@
 
 > **Keep in sync:** these diagrams describe the system as built. Whenever you change the architecture, modules, runtime flow, or deployment topology, update the affected view in the same change — do not let them drift.
 
-Runtime behavior as of M3 (multi-step DAGs on top of the M2 machinery: submit → execute, retries with backoff, lease heartbeat, crashed-worker recovery, per-attempt timeouts, dead-lettering + redrive, and now dependency promotion + failure cascade).
+Runtime behavior as of M4 (durable timers and cron schedules on top of the M3 DAG machinery: submit → execute, retries with backoff, lease heartbeat, crashed-worker recovery, per-attempt timeouts, dead-lettering + redrive, dependency promotion + failure cascade, and now delayed steps + workflows that start on their own).
 
 ## Submit → execute happy path
 
@@ -136,6 +136,60 @@ sequenceDiagram
     Note over Worker,DB: POST /dead-letters/{T}/retry later restores dependents CANCELLED -> PENDING (ADR 0009/0010)
 ```
 
+## Cron: a workflow that starts on its own
+
+M4 lets a workflow run without anyone submitting it. `ScheduleSweeper` runs every `engine.schedule-sweep-interval` (default 5s) plus once at startup, mirroring the lease reaper. Claim, submit and advance happen in **one transaction**, so a crash mid-sweep leaves the schedule due rather than losing or duplicating the fire; `SKIP LOCKED` means a second engine sweeping concurrently takes different rows. A schedule that comes due after an outage fires **once**, for the most recent missed slot, and reports the backlog it dropped rather than replaying it (ADR 0011).
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant API as Engine REST API
+    participant Sweeper as Schedule sweeper (engine)
+    participant DB as PostgreSQL
+    participant Worker
+
+    Client->>API: POST /schedules (dag + cron expression)
+    API->>DB: validate cron + dag; INSERT workflow_schedules (next_fire_at = next slot)
+    API-->>Client: 201 Created (schedule id)
+
+    loop every sweep interval + once at startup
+        Sweeper->>DB: SELECT due unpaused schedules FOR UPDATE SKIP LOCKED
+        DB-->>Sweeper: due schedule
+        alt fell behind (engine was down)
+            Sweeper->>Sweeper: walk grid to latest missed slot, count skipped
+        end
+        Sweeper->>DB: INSERT workflow_instances (schedule_id, fired_for) + task_instances
+        Sweeper->>DB: append WORKFLOW_FIRED_BY_SCHEDULE (skipped count)
+        Sweeper->>DB: UPDATE next_fire_at, last_fired_at
+        Note over Sweeper,DB: one transaction — crash here leaves the schedule due, not half-fired
+    end
+
+    Worker->>DB: the run is now an ordinary workflow; normal claim path takes over
+```
+
+## Durable timers: a step that waits
+
+A task with `delaySeconds` is promoted to `READY` like any other, but its `scheduled_at` is pushed out so the claim query skips it until due — the wait costs no worker and no lease (ADR 0011). The delay is anchored at **readiness**: submit for a root task, promotion for a dependent one.
+
+```mermaid
+sequenceDiagram
+    participant GRPC as Engine gRPC service
+    participant DB as PostgreSQL
+    participant Worker
+
+    Worker->>GRPC: CompleteTask(success) for task T
+    GRPC->>DB: T -> SUCCEEDED; promote dependents -> READY
+    Note over DB: a dependent with delaySeconds gets scheduled_at = now + delay
+    Worker->>GRPC: FetchTask()
+    GRPC->>DB: SELECT READY/RETRY_SCHEDULED WHERE scheduled_at <= now
+    DB-->>GRPC: no rows (delayed task is READY but not due)
+    GRPC-->>Worker: NoTask
+    Note over Worker,DB: delay elapses — nothing is holding a lease, nothing is lost on restart
+    Worker->>GRPC: FetchTask()
+    GRPC->>DB: same query; delayed task is now due
+    GRPC-->>Worker: Task
+```
+
 ## The gRPC long-poll mechanic
 
 `FetchTask` is a long-lived call: the engine parks it on a virtual thread and polls the queue instead of returning immediately empty-handed.
@@ -172,7 +226,7 @@ sequenceDiagram
 | Status            | When it appears                                                                          |
 |-------------------|------------------------------------------------------------------------------------------|
 | `PENDING`         | Waiting on DAG dependencies (M3). Not claimable; promoted to `READY` when all deps `SUCCEEDED`. |
-| `READY`           | Eligible to be leased by a worker on the next `FetchTask` poll.                          |
+| `READY`           | Eligible to be leased on the next `FetchTask` poll — unless `delaySeconds` pushed `scheduled_at` into the future, in which case it is ready but not yet claimable (M4). |
 | `RUNNING`         | Leased by a worker; a `task_leases` row holds the lease.                                 |
 | `SUCCEEDED`       | Worker reported success. Terminal. Promotes dependents whose deps are now all met.        |
 | `FAILED`          | Retries exhausted — the dead-letter queue; redrive resets it to `READY` (ADR 0009).      |

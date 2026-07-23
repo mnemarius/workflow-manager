@@ -31,6 +31,6 @@ flowchart TB
 
 Startup order: `postgres` must report healthy before `engine` starts (Flyway migrations run on engine boot); `worker` and `dashboard` wait for `engine`.
 
-The engine's lease knobs are env-overridable on the compose service (`ENGINE_LEASE_DURATION`, default 30s; `ENGINE_REAPER_INTERVAL`, default 5s) — the failover demo and [scripts/chaos.sh](../../scripts/chaos.sh) shorten them to make recovery visible.
+The engine's timing knobs are env-overridable on the compose service (`ENGINE_LEASE_DURATION`, default 30s; `ENGINE_REAPER_INTERVAL`, default 5s; `ENGINE_SCHEDULE_SWEEP_INTERVAL`, default 5s) — the failover demo and [scripts/chaos.sh](../../scripts/chaos.sh) shorten the lease ones to make recovery visible.
 
 "Fits on a single small VM" is the quality bar — no Kafka, no Redis, no Kubernetes. One `docker compose up` brings up the whole stack; `docker compose down -v` tears it down cleanly.
