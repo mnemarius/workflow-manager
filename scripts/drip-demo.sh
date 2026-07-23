@@ -43,15 +43,18 @@ create_schedule() {
       { "key": "tips",  "type": "send-tips",  "dependsOn": ["welcome"], "delaySeconds": '"$DELAY"' },
       { "key": "offer", "type": "send-offer", "dependsOn": ["tips"],    "delaySeconds": '"$DELAY"' }
     ] }
-  }' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4
+  }' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true
 }
 
 schedule_json() {
   curl -s "$API/schedules/$1"
 }
 
+# Absent is a normal answer here, not an error: the API omits null fields, so lastFiredAt does not
+# exist at all until the schedule first fires. Without the `|| true` a missing field would make
+# grep fail the pipeline and, under `set -e`, kill the script mid-poll.
 json_field() {
-  echo "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -1 | cut -d'"' -f4
+  echo "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -1 | cut -d'"' -f4 || true
 }
 
 workflow_status() {
@@ -62,7 +65,7 @@ task_line() {
   echo "$1" \
     | grep -o '"taskKey":"[^"]*","type":"[^"]*","status":"[^"]*","attempts":[0-9]*' \
     | sed -E 's/"taskKey":"([^"]*)","type":"[^"]*","status":"([^"]*)","attempts":([0-9]*)/\1=\2(a\3)/' \
-    | paste -sd' ' -
+    | paste -sd' ' - || true
 }
 
 echo "registering drip-email schedule ($CRON, delay ${DELAY}s between sends) at $API ..."
@@ -97,7 +100,7 @@ fi
 # Phase 2: watch the run it started unfold across the delays. The engine assigns the instance id,
 # so ask the schedule which run it started.
 instance_id=$(curl -s "$API/schedules/$schedule_id/runs?limit=1" \
-  | grep -o '"workflowInstanceId":"[^"]*"' | head -1 | cut -d'"' -f4)
+  | grep -o '"workflowInstanceId":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 if [[ -z "$instance_id" ]]; then
   echo "FAIL: schedule reports a fire but no run is recorded against it"
   exit 1
