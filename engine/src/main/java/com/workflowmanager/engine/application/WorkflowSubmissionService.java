@@ -35,11 +35,21 @@ public class WorkflowSubmissionService {
 
     @Transactional
     public UUID submit(String name, int version, JsonNode dag, JsonNode input) {
+        return submit(name, version, dag, input, null, null);
+    }
+
+    /**
+     * {@code scheduleId} and {@code firedFor} mark a cron-triggered run (ADR 0011); the unique
+     * index over the pair means a duplicate fire fails here rather than starting a second run.
+     */
+    @Transactional
+    public UUID submit(
+            String name, int version, JsonNode dag, JsonNode input, UUID scheduleId, Instant firedFor) {
         Instant now = clock.instant();
         String inputJson = (input == null || input.isNull()) ? null : input.toString();
 
         UUID definitionId = repo.upsertDefinition(name, version, dag.toString());
-        UUID instanceId = repo.insertInstance(definitionId, inputJson, now);
+        UUID instanceId = repo.insertInstance(definitionId, inputJson, now, scheduleId, firedFor);
 
         MDC.put("workflow_id", instanceId.toString());
         try {
